@@ -80,3 +80,8 @@ pub fn is_float_window_open(app: AppHandle) -> bool {
         false
     }
 }
+
+#[tauri::command]
+pub fn start_drag(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.start_dragging().map_err(|e| e.to_string())
+}

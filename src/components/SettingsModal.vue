@@ -111,8 +111,8 @@ onMounted(async () => {
         <label class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">菜单栏显示</label>
         <div class="p-3 bg-[#131a2a]/70 rounded-xl border border-slate-800/70 flex items-center justify-between">
           <div>
-            <div class="text-xs font-medium text-white">显示周配额数字</div>
-            <div class="text-[10px] text-slate-400">在图标旁显示纯百分比 (如 38%)</div>
+            <div class="text-xs font-medium text-white">显示5小时配额数字</div>
+            <div class="text-[10px] text-slate-400">在图标旁显示纯百分比 (如 32%)</div>
           </div>
           <input type="checkbox" :checked="showPercentageInTray"
             @change="$emit('update-tray-mode', ($event.target as HTMLInputElement).checked)"

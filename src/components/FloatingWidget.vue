@@ -24,6 +24,18 @@ async function closeWidget() {
   await invoke('close_float_window');
 }
 
+async function onMouseDown(e: MouseEvent) {
+  if (e.button === 0) {
+    const target = e.target as HTMLElement;
+    if (target.closest('button')) return;
+    try {
+      await invoke('start_drag');
+    } catch (err) {
+      console.error('start_drag failed:', err);
+    }
+  }
+}
+
 const activePlan = computed<PlanItem | null>(() => {
   if (!planData.value?.items || planData.value.items.length === 0) return null;
   const team = planData.value.items.find(i => i.product.includes('team') && i.subscribed);
@@ -67,7 +79,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="w-[240px] h-[136px] bg-[#0e131f]/95 backdrop-blur-2xl border border-slate-700/60 rounded-2xl p-2.5 flex flex-col justify-between select-none shadow-2xl overflow-hidden font-sans">
+  <div @mousedown="onMouseDown" data-tauri-drag-region class="w-[240px] h-[136px] bg-[#0e131f] border border-slate-700/60 rounded-2xl p-2.5 flex flex-col justify-between select-none shadow-2xl overflow-hidden font-sans cursor-move">
     <!-- Draggable Header -->
     <div data-tauri-drag-region class="flex items-center justify-between cursor-move pb-1 border-b border-slate-800/60">
       <div data-tauri-drag-region class="flex items-center space-x-1.5 pointer-events-none">

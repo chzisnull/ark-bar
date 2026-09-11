@@ -56,11 +56,11 @@ function updateTrayTitleFromData(data: UsagePlanResponse) {
     return;
   }
 
-  // Find weekly percentage
+  // Find 5-hour session percentage (近5小时用量)
   const item = data.items?.find(i => i.subscribed) || data.items?.[0];
-  const weekly = item?.periods?.find(p => p.label.toLowerCase() === 'weekly');
-  if (weekly && typeof weekly.percent === 'number') {
-    const p = Math.round(weekly.percent);
+  const session = item?.periods?.find(p => p.label.toLowerCase() === 'session');
+  if (session && typeof session.percent === 'number') {
+    const p = Math.round(session.percent);
     invoke('update_tray_title', { title: ` ${p}%` });
   } else {
     invoke('update_tray_title', { title: '' });
