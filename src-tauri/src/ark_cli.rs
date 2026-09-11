@@ -191,7 +191,7 @@ pub fn check_for_updates() -> Result<UpdateInfo, String> {
     let url = format!("https://api.github.com/repos/{}/releases/latest", repo);
 
     // Use curl which is always available on macOS / Linux
-    let output = execute_cmd("curl", &["-s", "-H", "User-Agent: ark-bar-app", &url])
+    let output = execute_cmd("curl", &["-s", "--max-time", "3", "-H", "User-Agent: ark-bar-app", &url])
         .map_err(|e| format!("网络请求失败: {}", e))?;
 
     if !output.status.success() {

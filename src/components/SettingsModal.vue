@@ -2,7 +2,7 @@
 import { ref, onMounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { EnvironmentStatus, UpdateInfo } from '../types';
-import { ArrowLeft, RefreshCw, Download, CheckCircle2, AlertCircle, Power } from 'lucide-vue-next';
+import { ArrowLeft, RefreshCw, Download, CheckCircle2, AlertCircle, Power, Layout } from 'lucide-vue-next';
 import { openUrl } from '@tauri-apps/plugin-opener';
 
 const props = defineProps<{
@@ -21,6 +21,17 @@ const emit = defineEmits<{
 const isCheckingUpdate = ref(false);
 const updateResult = ref<UpdateInfo | null>(null);
 const updateError = ref('');
+const isFloatOpen = ref(false);
+
+async function toggleFloatWindow() {
+  if (isFloatOpen.value) {
+    await invoke('close_float_window');
+    isFloatOpen.value = false;
+  } else {
+    await invoke('open_float_window');
+    isFloatOpen.value = true;
+  }
+}
 
 async function handleCheckUpdate() {
   isCheckingUpdate.value = true;
@@ -47,22 +58,24 @@ async function openReleaseUrl() {
 
 async function handleQuit() {
   await invoke('hide_window');
-  // Exit app
   window.close();
 }
 
-onMounted(() => {
-  handleCheckUpdate();
+onMounted(async () => {
+  // Instant open without blocking on network check!
+  try {
+    isFloatOpen.value = await invoke<boolean>('is_float_window_open');
+  } catch {}
 });
 </script>
 
 <template>
-  <div class="flex flex-col h-full select-none text-slate-200">
+  <div class="flex flex-col h-full select-none text-slate-200 bg-[#0e131f]/95">
     <!-- Top Header -->
-    <div class="px-4 py-3 bg-slate-900/60 border-b border-slate-800/80 flex items-center justify-between">
+    <div class="px-4 py-3 bg-[#141b2d]/80 border-b border-slate-800/80 flex items-center justify-between">
       <div class="flex items-center space-x-2">
         <button @click="$emit('close')"
-          class="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition">
+          class="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800/80 transition">
           <ArrowLeft class="w-4 h-4" />
         </button>
         <h3 class="text-xs font-bold text-white tracking-wide">偏好设置与关于</h3>
@@ -72,24 +85,45 @@ onMounted(() => {
 
     <!-- Content Sections -->
     <div class="p-4 flex-1 overflow-y-auto space-y-4 text-xs">
-      <!-- 1. Display Settings -->
+      <!-- 1. Floating Desktop Widget Mode -->
       <div class="space-y-2">
-        <label class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">状态栏显示</label>
-        <div class="p-3 bg-slate-800/40 rounded-xl border border-slate-800 flex items-center justify-between">
-          <div>
-            <div class="text-xs font-medium text-white">状态栏文字</div>
-            <div class="text-[10px] text-slate-400">显示当前周配额百分比 (如 ⚡ 37%)</div>
+        <label class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">桌面显示模式</label>
+        <div class="p-3 bg-[#131a2a]/70 rounded-xl border border-slate-800/70 flex items-center justify-between">
+          <div class="flex items-center space-x-2.5">
+            <div class="w-7 h-7 rounded-lg bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
+              <Layout class="w-4 h-4" />
+            </div>
+            <div>
+              <div class="text-xs font-medium text-white">桌面悬浮框模式</div>
+              <div class="text-[10px] text-slate-400">在桌面上显示微型卡片，支持自由拖拽</div>
+            </div>
           </div>
-          <input type="checkbox" :checked="showPercentageInTray"
-            @change="$emit('update-tray-mode', ($event.target as HTMLInputElement).checked)"
-            class="w-4 h-4 accent-rose-500 rounded cursor-pointer" />
+          <button @click="toggleFloatWindow"
+            class="px-2.5 py-1 rounded-lg text-xs font-medium transition"
+            :class="isFloatOpen ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40 hover:bg-rose-500/30' : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-md shadow-indigo-500/20'">
+            {{ isFloatOpen ? '关闭悬浮窗' : '打开悬浮窗' }}
+          </button>
         </div>
       </div>
 
-      <!-- 2. Refresh Interval -->
+      <!-- 2. Status Bar Display -->
+      <div class="space-y-2">
+        <label class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">菜单栏显示</label>
+        <div class="p-3 bg-[#131a2a]/70 rounded-xl border border-slate-800/70 flex items-center justify-between">
+          <div>
+            <div class="text-xs font-medium text-white">显示周配额数字</div>
+            <div class="text-[10px] text-slate-400">在图标旁显示纯百分比 (如 38%)</div>
+          </div>
+          <input type="checkbox" :checked="showPercentageInTray"
+            @change="$emit('update-tray-mode', ($event.target as HTMLInputElement).checked)"
+            class="w-4 h-4 accent-indigo-500 rounded cursor-pointer" />
+        </div>
+      </div>
+
+      <!-- 3. Refresh Interval -->
       <div class="space-y-2">
         <label class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">自动刷新频率</label>
-        <div class="p-3 bg-slate-800/40 rounded-xl border border-slate-800 flex items-center justify-between">
+        <div class="p-3 bg-[#131a2a]/70 rounded-xl border border-slate-800/70 flex items-center justify-between">
           <div>
             <div class="text-xs font-medium text-white">后台轮询周期</div>
             <div class="text-[10px] text-slate-400">火山方舟数据有 5–30 分钟聚合延迟</div>
@@ -106,17 +140,17 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- 3. Update Check -->
+      <!-- 4. Update Check -->
       <div class="space-y-2">
         <label class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">版本与更新</label>
-        <div class="p-3 bg-slate-800/40 rounded-xl border border-slate-800 space-y-2.5">
+        <div class="p-3 bg-[#131a2a]/70 rounded-xl border border-slate-800/70 space-y-2.5">
           <div class="flex items-center justify-between">
             <div>
               <div class="text-xs font-medium text-white">检查 GitHub Releases</div>
               <div class="text-[10px] text-slate-400">仓库: chzisnull/ark-bar</div>
             </div>
             <button @click="handleCheckUpdate" :disabled="isCheckingUpdate"
-              class="px-2.5 py-1 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-lg text-xs flex items-center gap-1 transition">
+              class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs flex items-center gap-1 transition">
               <RefreshCw class="w-3 h-3" :class="{ 'animate-spin': isCheckingUpdate }" />
               <span>{{ isCheckingUpdate ? '检查中...' : '检查更新' }}</span>
             </button>
@@ -151,10 +185,10 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- 4. Environment Diagnostics -->
+      <!-- 5. Environment Diagnostics -->
       <div class="space-y-2">
         <label class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">运行环境诊断</label>
-        <div class="p-3 bg-slate-800/40 rounded-xl border border-slate-800 space-y-1.5 text-[11px]">
+        <div class="p-3 bg-[#131a2a]/70 rounded-xl border border-slate-800/70 space-y-1.5 text-[11px]">
           <div class="flex justify-between">
             <span class="text-slate-400">Node.js 版本:</span>
             <span class="font-mono text-slate-300">{{ envStatus?.node_version || '未安装' }}</span>
@@ -181,7 +215,7 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- 5. Quit Application -->
+      <!-- 6. Quit Application -->
       <div class="pt-2">
         <button @click="handleQuit"
           class="w-full py-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded-xl text-xs font-medium flex items-center justify-center gap-1.5 transition">

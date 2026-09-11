@@ -40,6 +40,9 @@ pub fn run() {
             ark_cli::check_for_updates,
             tray::update_tray_title,
             tray::hide_window,
+            tray::open_float_window,
+            tray::close_float_window,
+            tray::is_float_window_open,
         ])
         .run(tauri::generate_context!())
         .expect("运行 ArkBar 应用时出错");

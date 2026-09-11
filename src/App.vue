@@ -5,8 +5,10 @@ import type { EnvironmentStatus, UsagePlanResponse } from './types';
 import OnboardingWizard from './components/OnboardingWizard.vue';
 import UsagePanel from './components/UsagePanel.vue';
 import SettingsModal from './components/SettingsModal.vue';
+import FloatingWidget from './components/FloatingWidget.vue';
 import { Loader2 } from 'lucide-vue-next';
 
+const isFloatWindow = ref(window.location.hash === '#float');
 const currentView = ref<'loading' | 'onboarding' | 'panel' | 'settings'>('loading');
 const envStatus = ref<EnvironmentStatus | null>(null);
 const planData = ref<UsagePlanResponse | null>(null);
@@ -97,10 +99,14 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <main class="w-[380px] h-[550px] rounded-2xl bg-[#0e131f]/95 backdrop-blur-2xl border border-slate-700/60 shadow-2xl overflow-hidden flex flex-col font-sans">
+  <!-- 1. Floating Desktop Widget Mode -->
+  <FloatingWidget v-if="isFloatWindow" />
+
+  <!-- 2. Main Menu Bar Popover Mode -->
+  <main v-else class="w-full h-full rounded-2xl bg-[#0e131f] border border-slate-700/60 shadow-2xl overflow-hidden flex flex-col font-sans">
     <!-- 1. Loading View -->
     <div v-if="currentView === 'loading'" class="flex-1 flex flex-col items-center justify-center space-y-3">
-      <Loader2 class="w-8 h-8 text-rose-500 animate-spin" />
+      <Loader2 class="w-8 h-8 text-indigo-500 animate-spin" />
       <span class="text-xs text-slate-400 font-medium">正在检测环境与配额...</span>
     </div>
 

@@ -10,12 +10,28 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "main",
         "title": "ArkBar",
         "width": 380,
         "height": 550,
+        "resizable": false,
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "visible": false,
+        "skipTaskbar": true,
+        "shadow": true
+      },
+      {
+        "label": "float",
+        "title": "ArkBar Float",
+        "url": "index.html#float",
+        "width": 240,
+        "height": 136,
         "resizable": false,
         "fullscreen": false,
         "decorations": false,

@@ -2,7 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
-html, body {
+html, body, #app {
   margin: 0;
   padding: 0;
   width: 100%;
@@ -11,7 +11,8 @@ html, body {
   user-select: none;
   -webkit-user-select: none;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  background-color: transparent;
+  background-color: transparent !important;
+  background: transparent !important;
 }
 
 /* Custom subtle scrollbar */

@@ -53,3 +53,30 @@ pub fn hide_window(app: AppHandle) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[tauri::command]
+pub fn open_float_window(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("float") {
+        let _ = window.move_window(Position::TopRight);
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn close_float_window(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("float") {
+        let _ = window.hide();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn is_float_window_open(app: AppHandle) -> bool {
+    if let Some(window) = app.get_webview_window("float") {
+        window.is_visible().unwrap_or(false)
+    } else {
+        false
+    }
+}
