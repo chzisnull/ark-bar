@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, defineAsyncComponent } from 'vue';
 import type { ProviderType, ProviderUsageData, UpdateInfo } from '../types';
-import { RefreshCw, ExternalLink, Settings, Clock, Sparkles, Download, X, KeyRound } from 'lucide-vue-next';
-import { openUrl } from '@tauri-apps/plugin-opener';
-import UpdateModal from './UpdateModal.vue';
+import { RefreshCw, Settings, Clock, Sparkles, Download, X, KeyRound } from 'lucide-vue-next';
+
+const UpdateModal = defineAsyncComponent(() => import('./UpdateModal.vue'));
 
 const props = defineProps<{
   providersData: Record<ProviderType, ProviderUsageData | null>;
@@ -67,15 +67,6 @@ function formatDetailedReset(dateStr?: string): string {
     }
   } catch {
     return dateStr;
-  }
-}
-
-async function handleOpenConsole() {
-  const url = currentUsage.value?.console_url || 'https://console.volcengine.com';
-  try {
-    await openUrl(url);
-  } catch {
-    window.open(url, '_blank');
   }
 }
 </script>
@@ -252,17 +243,6 @@ async function handleOpenConsole() {
               </span>
             </div>
           </div>
-        </div>
-
-        <!-- External Console Link Button -->
-        <div class="pt-1">
-          <button
-            @click="handleOpenConsole"
-            class="w-full py-2 bg-gradient-to-r from-indigo-500/10 to-violet-500/10 hover:from-indigo-500/20 hover:to-violet-500/20 border border-indigo-500/20 hover:border-indigo-500/40 rounded-xl text-xs text-indigo-300 font-medium flex items-center justify-center space-x-1.5 transition duration-150 cursor-pointer"
-          >
-            <span>访问 {{ currentUsage.provider_name }} 控制台 / 网页</span>
-            <ExternalLink class="w-3.5 h-3.5 ml-0.5 opacity-80" />
-          </button>
         </div>
       </div>
 

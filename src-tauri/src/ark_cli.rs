@@ -255,28 +255,7 @@ pub fn get_usage_plan() -> Result<Value, String> {
 }
 
 pub fn get_volcengine_usage() -> ProviderUsageData {
-    let env_status = check_environment();
-    if !env_status.has_arkcli || !env_status.logged_in {
-        return ProviderUsageData {
-            provider: "volcengine".to_string(),
-            provider_name: "火山方舟".to_string(),
-            icon: "🌋".to_string(),
-            is_connected: false,
-            status_message: Some("未登录火山方舟或未安装 arkcli".to_string()),
-            error_message: env_status.error_message,
-            account_info: Some(ProviderAccountInfo {
-                user_name: env_status.user_name,
-                email: None,
-                account_id: env_status.account_id,
-                plan_name: Some("Coding Plan".to_string()),
-            }),
-            groups: Vec::new(),
-            primary_session_percent: None,
-            primary_reset_at: None,
-            console_url: Some("https://console.volcengine.com/ark/region:cn-beijing/subscription/coding-plan-enterprise".to_string()),
-        };
-    }
-
+    // Fast path: query usage plan directly (~200ms, avoids spawning node/npm/arkcli check subprocesses)
     match get_usage_plan() {
         Ok(json_val) => {
             let mut groups = Vec::new();
@@ -331,10 +310,8 @@ pub fn get_volcengine_usage() -> ProviderUsageData {
             }
 
             let viewer = json_val.get("viewer");
-            let user_name = viewer.and_then(|v| v.get("user_name")).and_then(|u| u.as_str()).map(|s| s.to_string())
-                .or(env_status.user_name);
-            let account_id = viewer.and_then(|v| v.get("account_id")).and_then(|a| a.as_str()).map(|s| s.to_string())
-                .or(env_status.account_id);
+            let user_name = viewer.and_then(|v| v.get("user_name")).and_then(|u| u.as_str()).map(|s| s.to_string());
+            let account_id = viewer.and_then(|v| v.get("account_id")).and_then(|a| a.as_str()).map(|s| s.to_string());
 
             ProviderUsageData {
                 provider: "volcengine".to_string(),
@@ -355,23 +332,35 @@ pub fn get_volcengine_usage() -> ProviderUsageData {
                 console_url: Some("https://console.volcengine.com/ark/region:cn-beijing/subscription/coding-plan-enterprise".to_string()),
             }
         }
-        Err(e) => ProviderUsageData {
-            provider: "volcengine".to_string(),
-            provider_name: "火山方舟".to_string(),
-            icon: "🌋".to_string(),
-            is_connected: false,
-            status_message: Some("获取火山方舟配额失败".to_string()),
-            error_message: Some(e),
-            account_info: Some(ProviderAccountInfo {
-                user_name: env_status.user_name,
-                email: None,
-                account_id: env_status.account_id,
-                plan_name: Some("Coding Plan".to_string()),
-            }),
-            groups: Vec::new(),
-            primary_session_percent: None,
-            primary_reset_at: None,
-            console_url: Some("https://console.volcengine.com/ark/region:cn-beijing/subscription/coding-plan-enterprise".to_string()),
+        Err(e) => {
+            // Slow diagnostic path: only check environment when usage plan fails
+            let env_status = check_environment();
+            let status_msg = if !env_status.has_arkcli {
+                "未检测到 arkcli 命令行工具".to_string()
+            } else if !env_status.logged_in {
+                "未登录火山方舟或登录已过期".to_string()
+            } else {
+                "获取火山方舟配额失败".to_string()
+            };
+
+            ProviderUsageData {
+                provider: "volcengine".to_string(),
+                provider_name: "火山方舟".to_string(),
+                icon: "🌋".to_string(),
+                is_connected: false,
+                status_message: Some(status_msg),
+                error_message: Some(e),
+                account_info: Some(ProviderAccountInfo {
+                    user_name: env_status.user_name,
+                    email: None,
+                    account_id: env_status.account_id,
+                    plan_name: Some("Coding Plan".to_string()),
+                }),
+                groups: Vec::new(),
+                primary_session_percent: None,
+                primary_reset_at: None,
+                console_url: Some("https://console.volcengine.com/ark/region:cn-beijing/subscription/coding-plan-enterprise".to_string()),
+            }
         }
     }
 }

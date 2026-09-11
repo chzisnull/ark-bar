@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue';
+import { ref, onMounted, onUnmounted, watch, defineAsyncComponent } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { EnvironmentStatus, UpdateInfo, ProviderType, ProviderUsageData } from './types';
-import OnboardingWizard from './components/OnboardingWizard.vue';
 import UsagePanel from './components/UsagePanel.vue';
-import SettingsModal from './components/SettingsModal.vue';
-import FloatingWidget from './components/FloatingWidget.vue';
+
+// Lazy load non-critical components to minimize initial bundle parsing
+const OnboardingWizard = defineAsyncComponent(() => import('./components/OnboardingWizard.vue'));
+const SettingsModal = defineAsyncComponent(() => import('./components/SettingsModal.vue'));
+const FloatingWidget = defineAsyncComponent(() => import('./components/FloatingWidget.vue'));
 
 const isFloatWindow = ref(window.location.hash === '#float');
 const currentView = ref<'onboarding' | 'panel' | 'settings'>('panel');
@@ -29,14 +31,35 @@ const refreshInterval = ref<number>(
   Number(localStorage.getItem('arkbar_refresh_interval')) || 15
 );
 
-const providersData = ref<Record<ProviderType, ProviderUsageData | null>>({
-  volcengine: null,
-  antigravity: null,
-  grok: null,
-  codex: null,
-});
+// 0ms startup: hydrate from local cache immediately
+const CACHE_KEY = 'arkbar_cached_providers_data';
+
+function loadCachedProviders(): Record<ProviderType, ProviderUsageData | null> {
+  const defaults: Record<ProviderType, ProviderUsageData | null> = {
+    volcengine: null,
+    antigravity: null,
+    grok: null,
+    codex: null,
+  };
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return { ...defaults, ...parsed };
+    }
+  } catch {}
+  return defaults;
+}
+
+const providersData = ref<Record<ProviderType, ProviderUsageData | null>>(loadCachedProviders());
 
 let timer: any = null;
+
+function saveCachedProviders() {
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify(providersData.value));
+  } catch {}
+}
 
 async function checkEnv() {
   try {
@@ -47,34 +70,19 @@ async function checkEnv() {
   }
 }
 
-async function fetchAllUsage() {
-  isRefreshing.value = true;
-  try {
-    const list = await invoke<ProviderUsageData[]>('get_all_providers_usage');
-    for (const item of list) {
-      if (item.provider in providersData.value) {
-        providersData.value[item.provider as ProviderType] = item;
-      }
-    }
-    updateTrayTitle();
-  } catch (err) {
-    console.error('Failed to fetch all providers usage:', err);
-  } finally {
-    isRefreshing.value = false;
-  }
-}
-
-async function fetchActiveProviderUsage() {
+// Lazy fetch: only fetch the requested provider to avoid running all 4 providers (e.g. 9s agy)
+async function fetchProviderUsage(provider: ProviderType) {
   isRefreshing.value = true;
   try {
     const data = await invoke<ProviderUsageData>('get_unified_usage', {
-      provider: activeProvider.value,
+      provider,
       customToken: null,
     });
-    providersData.value[activeProvider.value] = data;
+    providersData.value[provider] = data;
+    saveCachedProviders();
     updateTrayTitle();
   } catch (err) {
-    console.error(`Failed to fetch ${activeProvider.value} usage:`, err);
+    console.error(`Failed to fetch ${provider} usage:`, err);
   } finally {
     isRefreshing.value = false;
   }
@@ -84,21 +92,21 @@ function handleSwitchProvider(provider: ProviderType) {
   activeProvider.value = provider;
   localStorage.setItem('arkbar_active_provider', provider);
   updateTrayTitle();
-  if (!providersData.value[provider]) {
-    fetchActiveProviderUsage();
-  }
+  // Fetch fresh data for the newly active provider (lazy load on demand)
+  fetchProviderUsage(provider);
 }
 
 function handleGoAuth(provider: ProviderType) {
   if (provider === 'volcengine') {
+    checkEnv();
     currentView.value = 'onboarding';
   } else {
     currentView.value = 'settings';
   }
 }
 
-async function handleRefreshAll() {
-  await Promise.allSettled([checkEnv(), fetchAllUsage()]);
+async function handleRefreshCurrent() {
+  await fetchProviderUsage(activeProvider.value);
 }
 
 function updateTrayTitle() {
@@ -123,7 +131,7 @@ function setupTimer() {
   if (refreshInterval.value > 0) {
     timer = setInterval(() => {
       if (currentView.value === 'panel') {
-        fetchAllUsage();
+        fetchProviderUsage(activeProvider.value);
       }
     }, refreshInterval.value * 60 * 1000);
   }
@@ -153,12 +161,25 @@ async function checkAutoUpdate() {
   }
 }
 
+async function handleOnboardingComplete() {
+  currentView.value = 'panel';
+  await fetchProviderUsage('volcengine');
+}
+
 onMounted(() => {
-  // Non-blocking immediate startup: show panel directly and load data in background
-  checkEnv();
-  fetchAllUsage();
+  // 1. Instantly update tray title from cached data (0ms)
+  updateTrayTitle();
+
+  // 2. Only fetch the active provider on startup (~200ms)
+  fetchProviderUsage(activeProvider.value);
+
+  // 3. Setup timer
   setupTimer();
-  checkAutoUpdate();
+
+  // 4. Deferred non-critical tasks: check auto-updates after 4s idle to avoid startup CPU/network contention
+  setTimeout(() => {
+    checkAutoUpdate();
+  }, 4000);
 });
 
 onUnmounted(() => {
@@ -177,8 +198,8 @@ onUnmounted(() => {
       v-if="currentView === 'onboarding'"
       :status="envStatus || { has_node: false, node_version: null, has_npm: false, npm_version: null, has_arkcli: false, arkcli_version: null, logged_in: false, user_name: null, account_id: null, active_profile: null, error_message: null }"
       @env-updated="envStatus = $event"
-      @refresh="handleRefreshAll"
-      @complete="() => { checkEnv(); fetchAllUsage(); currentView = 'panel'; }"
+      @refresh="checkEnv"
+      @complete="handleOnboardingComplete"
       @back="currentView = 'panel'"
     />
 
@@ -190,7 +211,7 @@ onUnmounted(() => {
       :is-refreshing="isRefreshing"
       :update-info="updateInfo"
       @switch-provider="handleSwitchProvider"
-      @refresh="handleRefreshAll"
+      @refresh="handleRefreshCurrent"
       @go-auth="handleGoAuth"
       @open-settings="currentView = 'settings'"
     />
@@ -207,7 +228,7 @@ onUnmounted(() => {
       @update-tray-mode="showPercentageInTray = $event"
       @update-tray-target="trayTarget = $event"
       @re-login="currentView = 'onboarding'"
-      @provider-token-updated="fetchAllUsage"
+      @provider-token-updated="handleRefreshCurrent"
       @close="currentView = 'panel'"
     />
   </main>

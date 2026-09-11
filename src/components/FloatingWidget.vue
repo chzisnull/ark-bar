@@ -8,7 +8,20 @@ const currentProvider = ref<ProviderType>(
   (localStorage.getItem('arkbar_float_provider') as ProviderType) || 'volcengine'
 );
 
-const usageData = ref<ProviderUsageData | null>(null);
+const CACHE_KEY = 'arkbar_cached_providers_data';
+
+function getCachedUsage(provider: ProviderType): ProviderUsageData | null {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return parsed[provider] || null;
+    }
+  } catch {}
+  return null;
+}
+
+const usageData = ref<ProviderUsageData | null>(getCachedUsage(currentProvider.value));
 const isRefreshing = ref(false);
 let timer: any = null;
 
@@ -20,6 +33,12 @@ async function fetchUsage() {
       customToken: null,
     });
     usageData.value = data;
+    try {
+      const raw = localStorage.getItem(CACHE_KEY);
+      const parsed = raw ? JSON.parse(raw) : {};
+      parsed[currentProvider.value] = data;
+      localStorage.setItem(CACHE_KEY, JSON.stringify(parsed));
+    } catch {}
   } catch (err) {
     console.error('Floating widget fetch failed:', err);
   } finally {
@@ -33,6 +52,10 @@ function cycleProvider() {
   const nextIdx = (curIdx + 1) % ids.length;
   currentProvider.value = ids[nextIdx];
   localStorage.setItem('arkbar_float_provider', currentProvider.value);
+  const cached = getCachedUsage(currentProvider.value);
+  if (cached) {
+    usageData.value = cached;
+  }
   fetchUsage();
 }
 
