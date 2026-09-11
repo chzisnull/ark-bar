@@ -51,9 +51,16 @@
 
 前往 [Releases 页面](https://github.com/chzisnull/ark-bar/releases) 下载适合您操作系统的最新安装包：
 
-* **macOS (Apple Silicon M 系列)**：`ArkBar_aarch64.dmg`
-* **macOS (Intel 系列)**：`ArkBar_x64.dmg`
-* **Windows**：`ArkBar_x64_en-US.msi` 或 便携版 `.exe`
+* **macOS (Apple Silicon M 系列)**：`ArkBar_*_aarch64.dmg`
+* **macOS (Intel 系列)**：`ArkBar_*_x64.dmg`
+* **Windows (64位)**：`ArkBar_*_x64-setup.exe` (或 `.msi`)
+
+### ⚠️ macOS 首次打开提示“已损坏，无法打开”解决办法
+由于未购买苹果昂贵的商业开发者证书，macOS Gatekeeper 会对从浏览器下载的应用自动添加隔离标记。
+打开终端（Terminal.app），执行以下一行命令即可永久解除：
+```bash
+xattr -dr com.apple.quarantine /Applications/ArkBar.app
+```
 
 ---
 

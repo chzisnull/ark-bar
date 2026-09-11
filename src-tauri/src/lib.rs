@@ -3,6 +3,7 @@ mod ark_cli;
 mod tray;
 
 use tauri::Manager;
+use tauri_plugin_positioner::{Position, WindowExt};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -28,6 +29,24 @@ pub fn run() {
                         let _ = win_clone.hide();
                     }
                 });
+
+                // Auto popup on launch so user immediately knows ArkBar is running!
+                #[cfg(target_os = "macos")]
+                {
+                    if window.move_window_constrained(Position::TrayCenter).is_err() {
+                        let _ = window.move_window(Position::TopRight);
+                    }
+                }
+
+                #[cfg(not(target_os = "macos"))]
+                {
+                    if window.move_window_constrained(Position::TrayCenter).is_err() {
+                        let _ = window.move_window(Position::BottomRight);
+                    }
+                }
+
+                let _ = window.show();
+                let _ = window.set_focus();
             }
 
             Ok(())
@@ -36,6 +55,8 @@ pub fn run() {
             ark_cli::check_environment,
             ark_cli::install_arkcli,
             ark_cli::login_volc_sso,
+            ark_cli::get_sso_auth_url,
+            ark_cli::login_with_code,
             ark_cli::get_usage_plan,
             ark_cli::check_for_updates,
             tray::update_tray_title,

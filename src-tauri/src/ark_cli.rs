@@ -168,6 +168,72 @@ pub fn login_volc_sso() -> CommandResult {
 }
 
 #[tauri::command]
+pub fn get_sso_auth_url() -> Result<String, String> {
+    let output = execute_cmd("arkcli", &["auth", "login", "volc-sso", "--no-browser"])
+        .map_err(|e| format!("执行 arkcli 出错: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{}\n{}", stdout, stderr);
+
+    // 1. Try to find authorize_url in JSON
+    for line in combined.lines() {
+        if let Ok(json_val) = serde_json::from_str::<Value>(line) {
+            if let Some(url) = json_val.get("authorize_url").and_then(|u| u.as_str()) {
+                return Ok(url.to_string());
+            }
+        }
+    }
+
+    // 2. Search for https://signin.volcengine.com/authorize/oauth/authorize
+    for line in combined.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("https://signin.volcengine.com/authorize/oauth/authorize") {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    Err(format!("未能解析授权链接，原始输出: {}", combined))
+}
+
+#[tauri::command]
+pub fn login_with_code(code: String) -> CommandResult {
+    let clean_code = code.trim();
+    if clean_code.is_empty() {
+        return CommandResult {
+            success: false,
+            message: "授权码不能为空".to_string(),
+            details: None,
+        };
+    }
+
+    match execute_cmd("arkcli", &["auth", "login", "--no-browser", "--code", clean_code]) {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            if output.status.success() {
+                CommandResult {
+                    success: true,
+                    message: "授权码登录成功！".to_string(),
+                    details: Some(format!("{}\n{}", stdout, stderr)),
+                }
+            } else {
+                CommandResult {
+                    success: false,
+                    message: format!("授权码验证失败: {}", stderr.trim()),
+                    details: Some(format!("{}\n{}", stdout, stderr)),
+                }
+            }
+        }
+        Err(e) => CommandResult {
+            success: false,
+            message: format!("无法执行验证命令: {}", e),
+            details: None,
+        },
+    }
+}
+
+#[tauri::command]
 pub fn get_usage_plan() -> Result<Value, String> {
     match execute_cmd("arkcli", &["usage", "plan", "--format", "json"]) {
         Ok(output) => {

@@ -21,10 +21,23 @@ const viewer = computed(() => props.planData?.viewer);
 
 const activePlan = computed<PlanItem | null>(() => {
   if (!props.planData?.items || props.planData.items.length === 0) return null;
-  const team = props.planData.items.find(i => i.product.includes('team') && i.subscribed);
-  if (team) return team;
   const anySub = props.planData.items.find(i => i.subscribed);
   return anySub || props.planData.items[0];
+});
+
+const planEditionLabel = computed(() => {
+  if (!activePlan.value) return '💎 套餐生效';
+  const ed = (activePlan.value.edition || '').toLowerCase();
+  const prod = (activePlan.value.product || '').toLowerCase();
+  if (ed === 'pro' || prod.includes('pro')) return '🚀 Pro 套餐';
+  if (ed === 'team' || prod.includes('team')) return '👥 Team 套餐';
+  if (ed === 'lite' || prod.includes('lite')) return '💎 Lite 套餐';
+  if (ed === 'enterprise' || prod.includes('enterprise')) return '🏢 企业套餐';
+  if (activePlan.value.edition) {
+    const cap = activePlan.value.edition.charAt(0).toUpperCase() + activePlan.value.edition.slice(1);
+    return `💎 ${cap} 套餐`;
+  }
+  return '💎 订阅生效';
 });
 
 // 1. 近5小时用量 (Session)
@@ -110,7 +123,7 @@ async function openReleaseUrl() {
           <div class="flex items-center gap-1.5">
             <span class="text-xs font-bold text-white tracking-wide">ArkBar</span>
             <span class="text-[10px] bg-indigo-500/15 text-indigo-300 px-1.5 py-0.2 rounded font-medium border border-indigo-500/30">
-              💎 Lite 套餐
+              {{ planEditionLabel }}
             </span>
             <span class="text-[10px] bg-emerald-500/15 text-emerald-400 px-1.5 py-0.2 rounded font-medium flex items-center gap-1 border border-emerald-500/30">
               <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>

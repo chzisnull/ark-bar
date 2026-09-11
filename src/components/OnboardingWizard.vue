@@ -3,6 +3,7 @@ import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { EnvironmentStatus, CommandResult } from '../types';
 import { CheckCircle2, XCircle, AlertTriangle, RefreshCw, Terminal, ExternalLink, ArrowRight, ShieldCheck } from 'lucide-vue-next';
+import { openUrl } from '@tauri-apps/plugin-opener';
 
 const props = defineProps<{
   status: EnvironmentStatus;
@@ -18,6 +19,13 @@ const isLoggingIn = ref(false);
 const installLogs = ref('');
 const actionMessage = ref('');
 const errorMessage = ref('');
+
+// Code login mode for robust cross-device / Windows fallback
+const loginMode = ref<'browser' | 'code'>('browser');
+const authCode = ref('');
+const authUrl = ref('');
+const isGettingAuthUrl = ref(false);
+const isSubmittingCode = ref(false);
 
 async function handleInstallArkCli() {
   isInstalling.value = true;
@@ -53,12 +61,59 @@ async function handleLoginSso() {
       actionMessage.value = '登录授权成功！';
       emit('refresh');
     } else {
+      errorMessage.value = `${result.message}。若浏览器提示 redirect_uri 错误或未回调，请使用下方「授权码模式」登录。`;
+      loginMode.value = 'code';
+    }
+  } catch (err: any) {
+    errorMessage.value = `登录授权出错: ${err}。推荐切换为「授权码模式」登录。`;
+    loginMode.value = 'code';
+  } finally {
+    isLoggingIn.value = false;
+  }
+}
+
+async function handleOpenAuthUrl() {
+  isGettingAuthUrl.value = true;
+  errorMessage.value = '';
+  actionMessage.value = '正在生成火山方舟 SSO 授权链接...';
+  try {
+    const url = await invoke<string>('get_sso_auth_url');
+    authUrl.value = url;
+    actionMessage.value = '已在浏览器打开授权页面，完成授权后请复制显示的授权码粘贴到下方。';
+    try {
+      await openUrl(url);
+    } catch {
+      window.open(url, '_blank');
+    }
+  } catch (err: any) {
+    errorMessage.value = `获取授权链接失败: ${err}`;
+  } finally {
+    isGettingAuthUrl.value = false;
+  }
+}
+
+async function handleLoginWithCode() {
+  if (!authCode.value.trim()) {
+    errorMessage.value = '请先粘贴浏览器中获取的授权码';
+    return;
+  }
+
+  isSubmittingCode.value = true;
+  errorMessage.value = '';
+  actionMessage.value = '正在验证授权码并绑定火山方舟账号...';
+
+  try {
+    const result = await invoke<CommandResult>('login_with_code', { code: authCode.value });
+    if (result.success) {
+      actionMessage.value = '授权成功！正在刷新环境...';
+      emit('refresh');
+    } else {
       errorMessage.value = result.message;
     }
   } catch (err: any) {
-    errorMessage.value = `登录授权出错: ${err}`;
+    errorMessage.value = `提交授权码出错: ${err}`;
   } finally {
-    isLoggingIn.value = false;
+    isSubmittingCode.value = false;
   }
 }
 
@@ -140,36 +195,86 @@ function openNodeDownload() {
         </div>
       </div>
 
-      <!-- Step 3: Login Status -->
-      <div class="p-3.5 rounded-xl border transition-all duration-200"
-        :class="status.logged_in ? 'bg-slate-800/40 border-emerald-500/30' : 'bg-slate-800/60 border-sky-500/30'">
-        <div class="flex items-start justify-between">
-          <div class="flex items-center space-x-2.5">
-            <CheckCircle2 v-if="status.logged_in" class="w-5 h-5 text-emerald-400 flex-shrink-0" />
-            <ShieldCheck v-else class="w-5 h-5 text-sky-400 flex-shrink-0" />
-            <div>
-              <div class="text-sm font-medium text-white flex items-center gap-2">
-                3. 火山方舟授权登录
-                <span v-if="status.logged_in" class="text-[10px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded">
-                  已登录 ({{ status.user_name || '用户' }})
-                </span>
+        <!-- Step 3: Login Status -->
+        <div class="p-3.5 rounded-xl border transition-all duration-200"
+          :class="status.logged_in ? 'bg-slate-800/40 border-emerald-500/30' : 'bg-slate-800/60 border-sky-500/30'">
+          <div class="flex items-start justify-between">
+            <div class="flex items-center space-x-2.5">
+              <CheckCircle2 v-if="status.logged_in" class="w-5 h-5 text-emerald-400 flex-shrink-0" />
+              <ShieldCheck v-else class="w-5 h-5 text-sky-400 flex-shrink-0" />
+              <div>
+                <div class="text-sm font-medium text-white flex items-center gap-2">
+                  3. 火山方舟授权登录
+                  <span v-if="status.logged_in" class="text-[10px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded font-medium">
+                    已登录 ({{ status.user_name || '用户' }})
+                  </span>
+                </div>
+                <p class="text-xs text-slate-400 mt-0.5">
+                  {{ status.logged_in ? `账号 ID: ${status.account_id || '-'}` : '需授权登录以获取套餐配额数据' }}
+                </p>
               </div>
-              <p class="text-xs text-slate-400 mt-0.5">
-                {{ status.logged_in ? `账号 ID: ${status.account_id || '-'}` : '需授权登录以获取套餐配额数据' }}
+            </div>
+          </div>
+
+          <div v-if="status.has_arkcli && !status.logged_in" class="mt-3 pt-2.5 border-t border-slate-800 space-y-2.5">
+            <!-- Mode Switcher -->
+            <div class="flex items-center justify-between text-[11px] bg-slate-900/60 p-1 rounded-lg border border-slate-800">
+              <button @click="loginMode = 'browser'"
+                class="flex-1 py-1 rounded text-center transition font-medium"
+                :class="loginMode === 'browser' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'">
+                浏览器一键授权
+              </button>
+              <button @click="loginMode = 'code'"
+                class="flex-1 py-1 rounded text-center transition font-medium"
+                :class="loginMode === 'code' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'">
+                授权码登录 (备用)
+              </button>
+            </div>
+
+            <!-- Mode 1: Browser One-Click -->
+            <div v-if="loginMode === 'browser'" class="space-y-1.5">
+              <button @click="handleLoginSso" :disabled="isLoggingIn"
+                class="w-full py-1.5 px-3 bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 shadow-md shadow-sky-500/20 transition">
+                <RefreshCw v-if="isLoggingIn" class="w-3.5 h-3.5 animate-spin" />
+                <ExternalLink v-else class="w-3.5 h-3.5" />
+                <span>{{ isLoggingIn ? '正在等待浏览器授权完成...' : '在浏览器中授权登录' }}</span>
+              </button>
+              <p class="text-[10px] text-slate-500 text-center">
+                唤起浏览器登录火山方舟，完成后自动回调
+              </p>
+            </div>
+
+            <!-- Mode 2: Authorization Code (Cross-Device, 100% Reliable Fallback) -->
+            <div v-else class="space-y-2">
+              <div class="p-2.5 bg-slate-900/80 rounded-lg border border-slate-800 space-y-2 text-xs">
+                <div class="flex items-center justify-between">
+                  <span class="text-[11px] text-slate-300 font-medium">第 1 步：获取授权链接</span>
+                  <button @click="handleOpenAuthUrl" :disabled="isGettingAuthUrl"
+                    class="px-2 py-1 bg-sky-600 hover:bg-sky-500 text-white rounded text-[10px] flex items-center gap-1 transition shadow-sm">
+                    <RefreshCw v-if="isGettingAuthUrl" class="w-3 h-3 animate-spin" />
+                    <ExternalLink v-else class="w-3 h-3" />
+                    <span>在浏览器打开</span>
+                  </button>
+                </div>
+                <div class="space-y-1">
+                  <span class="text-[11px] text-slate-300 font-medium">第 2 步：粘贴浏览器中的授权码</span>
+                  <div class="flex gap-1.5">
+                    <input v-model="authCode" type="text" placeholder="粘贴 base64 授权码"
+                      class="flex-1 bg-slate-950 border border-slate-700 text-slate-200 text-xs rounded px-2 py-1 outline-none focus:border-indigo-500 font-mono" />
+                    <button @click="handleLoginWithCode" :disabled="isSubmittingCode || !authCode.trim()"
+                      class="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-medium rounded text-xs transition">
+                      <RefreshCw v-if="isSubmittingCode" class="w-3 h-3 animate-spin" />
+                      <span v-else>确认登录</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <p class="text-[10px] text-slate-400 text-center">
+                💡 无需本地端口，不受网络代理与 Windows 端口限制
               </p>
             </div>
           </div>
         </div>
-
-        <div v-if="status.has_arkcli && !status.logged_in" class="mt-3 pt-2.5 border-t border-slate-800">
-          <button @click="handleLoginSso" :disabled="isLoggingIn"
-            class="w-full py-1.5 px-3 bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 shadow-md shadow-sky-500/20 transition">
-            <RefreshCw v-if="isLoggingIn" class="w-3.5 h-3.5 animate-spin" />
-            <ExternalLink v-else class="w-3.5 h-3.5" />
-            <span>{{ isLoggingIn ? '正在等待浏览器授权...' : '浏览器授权登录 (volc-sso)' }}</span>
-          </button>
-        </div>
-      </div>
 
       <!-- Feedback / Log Section -->
       <div v-if="actionMessage || errorMessage" class="p-2.5 rounded-lg text-xs"

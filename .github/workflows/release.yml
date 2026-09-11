@@ -52,27 +52,39 @@ jobs:
           tagName: v__VERSION__
           releaseName: 'ArkBar v__VERSION__'
           releaseBody: |
-            ## ArkBar v__VERSION__ 发布说明
+            ## 🚀 ArkBar v__VERSION__ 发布说明
 
-            ### 🌟 新增特性与跨平台支持
-            - **Windows 全面支持**：
-              - 任务栏托盘自适应定位与弹出，完美贴合 Windows 任务栏。
-              - 支持免管理员权限安装（NSIS 当前用户安装）。
-              - 全面兼容 Windows 全局 npm / Node 运行路径与 `cmd.exe /C` 命令执行。
-            - **全平台自动检查版本更新**：
-              - 双端（macOS / Windows）应用启动静默检查 GitHub Releases 最新版本。
-              - 发现新版本在用量面板顶部展示醒目通知，支持一键直达下载更新。
-              - 防 GitHub API 速率限制（支持 GitHub Releases 自动重定向与语义化版本比对）。
-            - **桌面可拖拽悬浮窗**：
-              - 设置中支持一键开启桌面置顶微型卡片，随时查看 5 小时用量与额度状态。
-            - **视觉体验升级**：
-              - 极简单色菜单栏图标，顶栏展示近 5 小时滑动窗口用量。
-              - 完美对齐火山方舟官方控制台 0%/50%/90% 渐变刻度与警戒线。
+            ### ⚠️ macOS 首次打开提示“应用已损坏，无法打开”解决办法
+            由于本开源项目未购买苹果昂贵的商业开发者证书（$99/年），从浏览器下载后 macOS Gatekeeper 会自动对应用添加隔离标记。
+            **解决方法**：打开「终端」(Terminal.app)，复制并粘贴执行以下命令后回车即可正常打开：
+            ```bash
+            xattr -dr com.apple.quarantine /Applications/ArkBar.app
+            ```
+
+            ---
+
+            ### 🌟 v0.1.2 核心更新与优化
+            1. **⚡ Windows 体验质的飞跃**：
+               - **全静默后台执行**：调用后台诊断、npm 环境检测与命令执行时启用 `CREATE_NO_WINDOW` 标志，**彻底消除黑框终端（CMD）闪烁问题**。
+               - **启动与检测提速**：优化全局环境变量查找缓存机制，消除了反复遍历磁盘导致的卡顿，前端保持优雅流畅的 Loading 指示。
+            2. **🔑 授权登录增强（解决 SSO 回调错误）**：
+               - 针对 Windows 环境下本地回环端口可能受火山白名单限制导致 `redirect_uri` 报错的问题，新增**授权码直连登录**备用方案。
+               - 支持浏览器一键登录与授权码复制输入双模式，100% 确保顺畅完成鉴权。
+            3. **🎯 套餐版本精准展示**：
+               - 修复此前硬编码显示 Lite 的问题，现已支持根据火山方舟 API 动态精准匹配并展示 **Pro 套餐 (🚀)**、**Team 套餐 (👥)**、**Lite 套餐 (💎)** 与 **企业套餐 (🏢)**。
+            4. **🔔 启动即时感知**：
+               - macOS/Windows 用户初次启动或点击打开应用时，主卡片窗口将**自动弹出展示**，避免因静默驻留系统托盘而让用户误以为应用未启动。
+            5. **🖥️ 桌面可拖拽悬浮窗**：
+               - 设置中可一键开启常驻桌面的迷你悬浮窗，5 小时实时占用一目了然，支持任意自由拖拽与关闭。
+            6. **🔄 全平台自动检查更新**：
+               - 启动自动静默比对 GitHub Releases 最新版本，发现新版一键直达下载更新。
+
+            ---
 
             ### 📦 安装包下载指引
-            - **macOS (Apple Silicon M系列)**: `ArkBar_*_aarch64.dmg`
-            - **macOS (Intel芯片)**: `ArkBar_*_x64.dmg`
-            - **Windows (64位)**: `ArkBar_*_x64-setup.exe` (或 `.msi`)
+            - **macOS (Apple Silicon M1/M2/M3/M4 系列)**: `ArkBar_*_aarch64.dmg`
+            - **macOS (Intel 处理器)**: `ArkBar_*_x64.dmg`
+            - **Windows (64位安装包)**: `ArkBar_*_x64-setup.exe` (或 `.msi`)
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}

@@ -38,10 +38,22 @@ async function onMouseDown(e: MouseEvent) {
 
 const activePlan = computed<PlanItem | null>(() => {
   if (!planData.value?.items || planData.value.items.length === 0) return null;
-  const team = planData.value.items.find(i => i.product.includes('team') && i.subscribed);
-  if (team) return team;
   const anySub = planData.value.items.find(i => i.subscribed);
   return anySub || planData.value.items[0];
+});
+
+const editionTag = computed(() => {
+  if (!activePlan.value) return '套餐';
+  const ed = (activePlan.value.edition || '').toLowerCase();
+  const prod = (activePlan.value.product || '').toLowerCase();
+  if (ed === 'pro' || prod.includes('pro')) return 'Pro';
+  if (ed === 'team' || prod.includes('team')) return 'Team';
+  if (ed === 'lite' || prod.includes('lite')) return 'Lite';
+  if (ed === 'enterprise' || prod.includes('enterprise')) return '企业';
+  if (activePlan.value.edition) {
+    return activePlan.value.edition.toUpperCase();
+  }
+  return 'VIP';
 });
 
 const sessionPeriod = computed<Period | undefined>(() => {
@@ -86,7 +98,7 @@ onUnmounted(() => {
         <GripHorizontal class="w-3.5 h-3.5 text-slate-500" />
         <span class="text-[11px] font-bold text-white tracking-wide">ArkBar</span>
         <span class="text-[9px] bg-indigo-500/20 text-indigo-300 px-1 py-0.2 rounded font-mono">
-          Lite
+          {{ editionTag }}
         </span>
       </div>
 
