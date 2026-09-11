@@ -1,10 +1,14 @@
 use std::env;
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use serde_json::Value;
 use crate::env_resolver::execute_cmd;
 use crate::provider_models::{
     ProviderAccountInfo, ProviderPlanGroup, ProviderQuotaPeriod, ProviderUsageData,
 };
+
+static AGY_CACHE: Mutex<Option<(Instant, ProviderUsageData)>> = Mutex::new(None);
 
 fn resolve_agy_command() -> String {
     // 1. Check if "agy" in PATH
@@ -63,6 +67,15 @@ fn get_active_google_email() -> Option<String> {
 }
 
 pub fn get_antigravity_usage() -> ProviderUsageData {
+    // 1. Return in-memory cache if fresh (< 90 seconds) to ensure 0ms instant tab switching
+    if let Ok(guard) = AGY_CACHE.lock() {
+        if let Some((cached_at, ref data)) = *guard {
+            if cached_at.elapsed() < Duration::from_secs(90) {
+                return data.clone();
+            }
+        }
+    }
+
     let cmd = resolve_agy_command();
     let email = get_active_google_email();
 
@@ -197,7 +210,7 @@ pub fn get_antigravity_usage() -> ProviderUsageData {
         }
     }
 
-    ProviderUsageData {
+    let result = ProviderUsageData {
         provider: "antigravity".to_string(),
         provider_name: "Google Antigravity".to_string(),
         icon: "🌐".to_string(),
@@ -214,5 +227,11 @@ pub fn get_antigravity_usage() -> ProviderUsageData {
         primary_session_percent,
         primary_reset_at,
         console_url: Some("https://antigravity.google".to_string()),
+    };
+
+    if let Ok(mut guard) = AGY_CACHE.lock() {
+        *guard = Some((Instant::now(), result.clone()));
     }
+
+    result
 }

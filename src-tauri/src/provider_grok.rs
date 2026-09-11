@@ -1,10 +1,14 @@
 use std::env;
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use serde_json::Value;
 use crate::env_resolver::execute_cmd;
 use crate::provider_models::{
     ProviderAccountInfo, ProviderPlanGroup, ProviderQuotaPeriod, ProviderUsageData,
 };
+
+static GROK_CACHE: Mutex<Option<(Instant, ProviderUsageData)>> = Mutex::new(None);
 
 pub struct GrokAuthData {
     pub token: String,
@@ -74,6 +78,16 @@ pub fn get_grok_auth(custom_token: Option<&str>) -> Option<GrokAuthData> {
 }
 
 pub fn get_grok_usage(custom_token: Option<&str>) -> ProviderUsageData {
+    if custom_token.is_none() {
+        if let Ok(guard) = GROK_CACHE.lock() {
+            if let Some((cached_at, ref data)) = *guard {
+                if cached_at.elapsed() < Duration::from_secs(60) {
+                    return data.clone();
+                }
+            }
+        }
+    }
+
     let auth = match get_grok_auth(custom_token) {
         Some(a) => a,
         None => {
@@ -261,7 +275,7 @@ pub fn get_grok_usage(custom_token: Option<&str>) -> ProviderUsageData {
         periods,
     }];
 
-    ProviderUsageData {
+    let result = ProviderUsageData {
         provider: "grok".to_string(),
         provider_name: "xAI Grok".to_string(),
         icon: "⚡".to_string(),
@@ -278,5 +292,13 @@ pub fn get_grok_usage(custom_token: Option<&str>) -> ProviderUsageData {
         primary_session_percent: Some(used_percent),
         primary_reset_at: reset_at,
         console_url: Some("https://grok.com".to_string()),
+    };
+
+    if custom_token.is_none() {
+        if let Ok(mut guard) = GROK_CACHE.lock() {
+            *guard = Some((Instant::now(), result.clone()));
+        }
     }
+
+    result
 }

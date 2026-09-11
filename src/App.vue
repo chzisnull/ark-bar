@@ -70,9 +70,16 @@ async function checkEnv() {
   }
 }
 
-// Lazy fetch: only fetch the requested provider to avoid running all 4 providers (e.g. 9s agy)
-async function fetchProviderUsage(provider: ProviderType) {
-  isRefreshing.value = true;
+const inFlight = new Set<ProviderType>();
+
+// Fetch provider usage: supports silent background refresh to avoid UI freezes
+async function fetchProviderUsage(provider: ProviderType, silent = false) {
+  if (inFlight.has(provider)) return;
+  inFlight.add(provider);
+
+  if (!silent) {
+    isRefreshing.value = true;
+  }
   try {
     const data = await invoke<ProviderUsageData>('get_unified_usage', {
       provider,
@@ -84,7 +91,10 @@ async function fetchProviderUsage(provider: ProviderType) {
   } catch (err) {
     console.error(`Failed to fetch ${provider} usage:`, err);
   } finally {
-    isRefreshing.value = false;
+    inFlight.delete(provider);
+    if (!silent) {
+      isRefreshing.value = false;
+    }
   }
 }
 
@@ -92,8 +102,19 @@ function handleSwitchProvider(provider: ProviderType) {
   activeProvider.value = provider;
   localStorage.setItem('arkbar_active_provider', provider);
   updateTrayTitle();
-  // Fetch fresh data for the newly active provider (lazy load on demand)
-  fetchProviderUsage(provider);
+  // 0ms instant switch: if data already exists in memory/cache, render immediately without blocking UI
+  const hasData = !!providersData.value[provider];
+  fetchProviderUsage(provider, hasData);
+}
+
+// Background prefetch remaining providers to guarantee 0ms instant tab switching
+async function prefetchOtherProviders() {
+  const allProviders: ProviderType[] = ['volcengine', 'antigravity', 'grok', 'codex'];
+  for (const p of allProviders) {
+    if (p !== activeProvider.value) {
+      await fetchProviderUsage(p, true);
+    }
+  }
 }
 
 function handleGoAuth(provider: ProviderType) {
@@ -106,7 +127,7 @@ function handleGoAuth(provider: ProviderType) {
 }
 
 async function handleRefreshCurrent() {
-  await fetchProviderUsage(activeProvider.value);
+  await fetchProviderUsage(activeProvider.value, false);
 }
 
 function updateTrayTitle() {
@@ -166,23 +187,42 @@ async function handleOnboardingComplete() {
   await fetchProviderUsage('volcengine');
 }
 
+function handleWindowBlur() {
+  if (!isFloatWindow.value) {
+    invoke('hide_window').catch(() => {});
+  }
+}
+
 onMounted(() => {
+  if (!isFloatWindow.value) {
+    window.addEventListener('blur', handleWindowBlur);
+  }
+
   // 1. Instantly update tray title from cached data (0ms)
   updateTrayTitle();
 
-  // 2. Only fetch the active provider on startup (~200ms)
-  fetchProviderUsage(activeProvider.value);
+  // 2. Fetch active provider (silent if we already loaded from local cache)
+  const hasCached = !!providersData.value[activeProvider.value];
+  fetchProviderUsage(activeProvider.value, hasCached);
 
   // 3. Setup timer
   setupTimer();
 
-  // 4. Deferred non-critical tasks: check auto-updates after 4s idle to avoid startup CPU/network contention
+  // 4. Background prefetch remaining providers after 1.2s to guarantee 0ms instant tab switching
+  setTimeout(() => {
+    prefetchOtherProviders();
+  }, 1200);
+
+  // 5. Deferred non-critical tasks: check auto-updates after 4s idle to avoid startup CPU/network contention
   setTimeout(() => {
     checkAutoUpdate();
   }, 4000);
 });
 
 onUnmounted(() => {
+  if (!isFloatWindow.value) {
+    window.removeEventListener('blur', handleWindowBlur);
+  }
   if (timer) clearInterval(timer);
 });
 </script>

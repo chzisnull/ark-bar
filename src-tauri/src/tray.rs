@@ -185,3 +185,11 @@ pub fn end_drag_move() -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+pub fn set_float_window_size(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("float") {
+        let _ = window.set_size(tauri::LogicalSize::new(width, height));
+    }
+    Ok(())
+}
+

@@ -2,7 +2,7 @@
 import { ref, computed, onMounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { EnvironmentStatus, UpdateInfo, ProviderType } from '../types';
-import { ArrowLeft, RefreshCw, Download, CheckCircle2, AlertCircle, Power, Layout, ExternalLink, Eye, EyeOff, Save, Check } from 'lucide-vue-next';
+import { ArrowLeft, RefreshCw, Download, CheckCircle2, AlertCircle, Power, ExternalLink } from 'lucide-vue-next';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import UpdateModal from './UpdateModal.vue';
 
@@ -28,20 +28,30 @@ const updateResult = ref<UpdateInfo | null>(props.initialUpdateInfo || null);
 const updateError = ref('');
 const isFloatOpen = ref(false);
 const showUpdateModal = ref(false);
-const appVersion = computed(() => updateResult.value?.current_version || props.initialUpdateInfo?.current_version || '0.2.3');
+const appVersion = computed(() => updateResult.value?.current_version || props.initialUpdateInfo?.current_version || '0.2.4');
 
 // Tray Target Provider selection
 const trayTarget = ref<ProviderType | 'auto'>(
   (localStorage.getItem('arkbar_tray_target') as ProviderType | 'auto') || 'auto'
 );
 
-// Custom Provider Tokens
-const grokToken = ref('');
-const codexToken = ref('');
-const showGrokToken = ref(false);
-const showCodexToken = ref(false);
-const grokSavedSuccess = ref(false);
-const codexSavedSuccess = ref(false);
+// Desktop Floating Widget Primary Provider
+const floatPrimaryProvider = ref<ProviderType>(
+  (localStorage.getItem('arkbar_float_primary_provider') as ProviderType) ||
+  (localStorage.getItem('arkbar_float_provider') as ProviderType) ||
+  'volcengine'
+);
+
+function handleFloatPrimaryChange(e: Event) {
+  const target = (e.target as HTMLSelectElement).value as ProviderType;
+  floatPrimaryProvider.value = target;
+  localStorage.setItem('arkbar_float_primary_provider', target);
+  localStorage.setItem('arkbar_float_provider', target);
+  window.dispatchEvent(new StorageEvent('storage', {
+    key: 'arkbar_float_primary_provider',
+    newValue: target,
+  }));
+}
 
 async function toggleFloatWindow() {
   if (isFloatOpen.value) {
@@ -58,39 +68,6 @@ function handleTrayTargetChange(e: Event) {
   trayTarget.value = target;
   localStorage.setItem('arkbar_tray_target', target);
   emit('update-tray-target', target);
-}
-
-async function loadTokens() {
-  try {
-    const gTok = await invoke<string | null>('read_provider_token', { provider: 'grok' });
-    if (gTok) grokToken.value = gTok;
-    const cTok = await invoke<string | null>('read_provider_token', { provider: 'codex' });
-    if (cTok) codexToken.value = cTok;
-  } catch (err) {
-    console.debug('Failed to read provider tokens:', err);
-  }
-}
-
-async function saveGrokToken() {
-  try {
-    await invoke('set_provider_token', { provider: 'grok', token: grokToken.value });
-    grokSavedSuccess.value = true;
-    setTimeout(() => { grokSavedSuccess.value = false; }, 2000);
-    emit('provider-token-updated');
-  } catch (err) {
-    console.error('Save grok token failed:', err);
-  }
-}
-
-async function saveCodexToken() {
-  try {
-    await invoke('set_provider_token', { provider: 'codex', token: codexToken.value });
-    codexSavedSuccess.value = true;
-    setTimeout(() => { codexSavedSuccess.value = false; }, 2000);
-    emit('provider-token-updated');
-  } catch (err) {
-    console.error('Save codex token failed:', err);
-  }
 }
 
 async function handleCheckUpdate() {
@@ -125,7 +102,6 @@ onMounted(async () => {
   try {
     isFloatOpen.value = await invoke<boolean>('is_float_window_open');
   } catch {}
-  await loadTokens();
 });
 </script>
 
@@ -147,112 +123,104 @@ onMounted(async () => {
 
     <!-- Content Sections -->
     <div class="p-4 flex-1 overflow-y-auto space-y-4 text-xs">
-      <!-- 1. Multi-Provider Tokens & Credentials -->
+      <!-- 1. Multi-Provider Auto-Detection Overview -->
       <div class="space-y-2">
-        <label class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">服务商授权与令牌</label>
+        <div class="flex items-center justify-between">
+          <label class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">多模型服务商集成</label>
+          <span class="text-[10px] text-emerald-400 font-mono">⚡ 自动读取本地凭证</span>
+        </div>
 
-        <!-- A. xAI Grok Token -->
-        <div class="p-3 bg-[#131a2a]/70 rounded-xl border border-slate-800/70 space-y-2">
-          <div class="flex items-center justify-between">
-            <div class="flex items-center gap-1.5 font-medium text-white">
+        <div class="p-3 bg-[#131a2a]/70 rounded-xl border border-slate-800/70 space-y-2.5">
+          <!-- A. Volcengine -->
+          <div class="flex items-center justify-between text-[11px] pb-2 border-b border-slate-800/60">
+            <div class="flex items-center gap-1.5 font-medium text-slate-200">
+              <span>🌋</span>
+              <span>火山方舟 Coding Plan</span>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <span v-if="envStatus?.logged_in" class="text-emerald-400 font-mono text-[10px] flex items-center gap-1">
+                <CheckCircle2 class="w-3 h-3 text-emerald-400" />
+                <span>已登录{{ envStatus.user_name ? ` (${envStatus.user_name})` : '' }}</span>
+              </span>
+              <button
+                v-else
+                @click="$emit('re-login')"
+                class="px-2 py-0.5 rounded bg-sky-600/80 hover:bg-sky-500 text-white text-[10px] transition cursor-pointer"
+              >
+                前往登录
+              </button>
+            </div>
+          </div>
+
+          <!-- B. xAI Grok -->
+          <div class="flex items-center justify-between text-[11px] pb-2 border-b border-slate-800/60">
+            <div class="flex items-center gap-1.5 font-medium text-slate-200">
               <span>⚡</span>
-              <span>xAI Grok 令牌</span>
+              <span>xAI Grok</span>
             </div>
-            <span class="text-[10px] text-slate-500">自动读取 ~/.grok/auth.json</span>
+            <span class="text-slate-400 font-mono text-[10px]">自动识别 ~/.grok/auth.json</span>
           </div>
-          <div class="flex items-center gap-1.5">
-            <div class="relative flex-1">
-              <input
-                :type="showGrokToken ? 'text' : 'password'"
-                v-model="grokToken"
-                placeholder="优先读取本地 auth.json，亦可输入自定义 Token"
-                class="w-full bg-slate-900/90 border border-slate-700/80 rounded-lg px-2.5 py-1 text-[11px] text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500 pr-7 font-mono"
-              />
-              <button
-                type="button"
-                @click="showGrokToken = !showGrokToken"
-                class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
-              >
-                <EyeOff v-if="showGrokToken" class="w-3.5 h-3.5" />
-                <Eye v-else class="w-3.5 h-3.5" />
-              </button>
-            </div>
-            <button
-              @click="saveGrokToken"
-              class="px-2.5 py-1 rounded-lg text-xs font-medium flex items-center gap-1 transition"
-              :class="grokSavedSuccess ? 'bg-emerald-600 text-white' : 'bg-indigo-600 hover:bg-indigo-500 text-white'"
-            >
-              <Check v-if="grokSavedSuccess" class="w-3 h-3" />
-              <Save v-else class="w-3 h-3" />
-              <span>{{ grokSavedSuccess ? '已保存' : '保存' }}</span>
-            </button>
-          </div>
-        </div>
 
-        <!-- B. OpenAI Codex Token -->
-        <div class="p-3 bg-[#131a2a]/70 rounded-xl border border-slate-800/70 space-y-2">
-          <div class="flex items-center justify-between">
-            <div class="flex items-center gap-1.5 font-medium text-white">
+          <!-- C. Google Antigravity -->
+          <div class="flex items-center justify-between text-[11px] pb-2 border-b border-slate-800/60">
+            <div class="flex items-center gap-1.5 font-medium text-slate-200">
+              <span>🌐</span>
+              <span>Google Antigravity</span>
+            </div>
+            <span class="text-slate-400 font-mono text-[10px]">自动集成 agy CLI</span>
+          </div>
+
+          <!-- D. OpenAI Codex -->
+          <div class="flex items-center justify-between text-[11px]">
+            <div class="flex items-center gap-1.5 font-medium text-slate-200">
               <span>🤖</span>
-              <span>OpenAI Codex 令牌</span>
+              <span>OpenAI Codex</span>
             </div>
-            <span class="text-[10px] text-slate-500">自动读取 ~/.codex/auth.json</span>
-          </div>
-          <div class="flex items-center gap-1.5">
-            <div class="relative flex-1">
-              <input
-                :type="showCodexToken ? 'text' : 'password'"
-                v-model="codexToken"
-                placeholder="ChatGPT Session Token 或 OpenAI API Key (sk-...)"
-                class="w-full bg-slate-900/90 border border-slate-700/80 rounded-lg px-2.5 py-1 text-[11px] text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500 pr-7 font-mono"
-              />
-              <button
-                type="button"
-                @click="showCodexToken = !showCodexToken"
-                class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
-              >
-                <EyeOff v-if="showCodexToken" class="w-3.5 h-3.5" />
-                <Eye v-else class="w-3.5 h-3.5" />
-              </button>
-            </div>
-            <button
-              @click="saveCodexToken"
-              class="px-2.5 py-1 rounded-lg text-xs font-medium flex items-center gap-1 transition"
-              :class="codexSavedSuccess ? 'bg-emerald-600 text-white' : 'bg-indigo-600 hover:bg-indigo-500 text-white'"
-            >
-              <Check v-if="codexSavedSuccess" class="w-3 h-3" />
-              <Save v-else class="w-3 h-3" />
-              <span>{{ codexSavedSuccess ? '已保存' : '保存' }}</span>
-            </button>
-          </div>
-        </div>
-
-        <!-- C. Google Antigravity & Volcengine Status -->
-        <div class="p-3 bg-[#131a2a]/70 rounded-xl border border-slate-800/70 space-y-2">
-          <div class="flex items-center justify-between text-[11px]">
-            <span class="text-slate-400">🌐 Antigravity CLI:</span>
-            <span class="text-emerald-400 font-mono">已集成 (agy /usage)</span>
-          </div>
-          <div class="flex items-center justify-between text-[11px]">
-            <span class="text-slate-400">🌋 火山方舟状态:</span>
-            <span class="text-slate-300 font-mono">{{ envStatus?.logged_in ? '已登录' : '未登录' }}</span>
-          </div>
-          <div v-if="envStatus?.user_name" class="flex items-center justify-between text-[11px]">
-            <span class="text-slate-400">火山方舟账号:</span>
-            <span class="text-slate-300 font-mono">{{ envStatus.user_name }}</span>
-          </div>
-          <div class="pt-1 flex justify-end">
-            <button
-              @click="$emit('re-login')"
-              class="text-[10px] text-sky-400 hover:text-sky-300 flex items-center gap-1"
-            >
-              <span>重新进行火山 SSO 授权</span>
-            </button>
+            <span class="text-slate-400 font-mono text-[10px]">自动识别 ~/.codex/auth.json</span>
           </div>
         </div>
       </div>
 
-      <!-- 2. Tray Display Settings -->
+      <!-- 2. Desktop Floating Widget Settings -->
+      <div class="space-y-2">
+        <label class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">桌面悬浮监控框</label>
+        <div class="p-3 bg-[#131a2a]/70 rounded-xl border border-slate-800/70 space-y-3">
+          <!-- Toggle float window -->
+          <div class="flex items-center justify-between">
+            <div>
+              <p class="font-medium text-white text-xs">开启桌面悬浮监控框</p>
+              <p class="text-[10px] text-slate-400">常驻桌面顶层，极简胶囊卡片，支持任意拖拽摆放</p>
+            </div>
+            <button
+              @click="toggleFloatWindow"
+              class="px-2.5 py-1 rounded-lg text-xs font-medium transition cursor-pointer"
+              :class="isFloatOpen ? 'bg-indigo-600 text-white shadow-sm' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'"
+            >
+              {{ isFloatOpen ? '已开启' : '开启' }}
+            </button>
+          </div>
+
+          <!-- Preferred first provider -->
+          <div class="flex items-center justify-between pt-2 border-t border-slate-800/60">
+            <div>
+              <p class="font-medium text-white text-xs">默认第一位展示厂商</p>
+              <p class="text-[10px] text-slate-400">悬浮框常驻展示该厂商，鼠标悬停展开所有已授权厂商</p>
+            </div>
+            <select
+              :value="floatPrimaryProvider"
+              @change="handleFloatPrimaryChange"
+              class="bg-slate-800 border border-slate-700 text-slate-200 text-xs rounded-lg px-2 py-1 outline-none focus:border-indigo-500 font-medium cursor-pointer"
+            >
+              <option value="volcengine">🌋 火山方舟 (默认)</option>
+              <option value="grok">⚡ xAI Grok</option>
+              <option value="antigravity">🌐 Google Antigravity</option>
+              <option value="codex">🤖 OpenAI Codex</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3. Tray Display Settings -->
       <div class="space-y-2">
         <label class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">系统托盘显示</label>
         <div class="p-3 bg-[#131a2a]/70 rounded-xl border border-slate-800/70 space-y-2.5">
@@ -264,7 +232,7 @@ onMounted(async () => {
             <select
               :value="trayTarget"
               @change="handleTrayTargetChange"
-              class="bg-slate-800 text-slate-200 border border-slate-700 rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-indigo-500"
+              class="bg-slate-800 text-slate-200 border border-slate-700 rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-indigo-500 cursor-pointer"
             >
               <option value="auto">🔄 跟随当前查看切换</option>
               <option value="volcengine">🌋 火山方舟 (5小时)</option>
@@ -281,7 +249,7 @@ onMounted(async () => {
             </div>
             <button
               @click="$emit('update-tray-mode', !showPercentageInTray)"
-              class="w-9 h-5 rounded-full transition duration-200 relative p-0.5 border"
+              class="w-9 h-5 rounded-full transition duration-200 relative p-0.5 border cursor-pointer"
               :class="showPercentageInTray ? 'bg-indigo-600 border-indigo-500' : 'bg-slate-800 border-slate-700'"
             >
               <div
@@ -290,29 +258,6 @@ onMounted(async () => {
               ></div>
             </button>
           </div>
-        </div>
-      </div>
-
-      <!-- 3. Desktop Floating Widget -->
-      <div class="space-y-2">
-        <label class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">桌面显示模式</label>
-        <div class="p-3 bg-[#131a2a]/70 rounded-xl border border-slate-800/70 flex items-center justify-between">
-          <div class="flex items-center space-x-2.5">
-            <div class="w-7 h-7 rounded-lg bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
-              <Layout class="w-4 h-4" />
-            </div>
-            <div>
-              <div class="text-xs font-medium text-white">桌面悬浮监控框</div>
-              <div class="text-[10px] text-slate-400">极简悬浮胶囊，支持任意拖拽摆放</div>
-            </div>
-          </div>
-          <button
-            @click="toggleFloatWindow"
-            class="px-2.5 py-1 rounded-lg text-xs font-medium transition"
-            :class="isFloatOpen ? 'bg-indigo-600 text-white shadow-sm' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'"
-          >
-            {{ isFloatOpen ? '已开启' : '开启' }}
-          </button>
         </div>
       </div>
 

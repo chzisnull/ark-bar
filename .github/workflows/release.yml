@@ -47,6 +47,20 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
+      - name: Read Release Notes
+        id: release_notes
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if [ -f RELEASE_NOTES.md ]; then
+            BODY=$(sed "s/__VERSION__/$VERSION/g" RELEASE_NOTES.md)
+            echo "body<<EOF" >> $GITHUB_OUTPUT
+            echo "$BODY" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "body=ArkBar v${VERSION} 发布更新" >> $GITHUB_OUTPUT
+          fi
+
       - name: Build Tauri App
         uses: tauri-apps/tauri-action@v0
         env:
@@ -54,41 +68,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: 'ArkBar v__VERSION__'
-          releaseBody: |
-            ## 🚀 ArkBar v__VERSION__ 发布说明
-
-            ### ⚠️ macOS 首次打开提示“应用已损坏，无法打开”解决办法
-            由于本开源项目未购买苹果昂贵的商业开发者证书（$99/年），从浏览器下载后 macOS Gatekeeper 会自动对应用添加隔离标记。
-            **解决方法**：打开「终端」(Terminal.app)，复制并粘贴执行以下命令后回车即可正常打开：
-            ```bash
-            xattr -dr com.apple.quarantine /Applications/ArkBar.app
-            ```
-
-            ---
-
-            ### 🌟 v0.1.4 核心优化与更新
-            1. **🖥️ Windows 悬浮窗拖拽体验全面升级（解决无法拖拽问题）**：
-               - 彻底解决 Windows WebView2 内核下无边框透明窗口因消息捕获冲突导致无法拖拽的问题。
-               - 引入高精度指针捕获机制（Pointer Events Capture）与 Rust DPI 缩放换算（`scale_factor`），在各类高分屏（100%、125%、150% 等缩放）下实现零延迟、顺滑无抖动的自由拖拽。
-               - 交互隔离保护：点击刷新或关闭按钮正常触发，不产生误触拖拽。
-            2. **🔥 全平台「应用内一键在线极速更新」**：
-               - macOS 与 Windows 双端均支持在软件内一键极速更新，自动下载解压、无感升级重启，macOS 更新后自动脱离隔离属性。
-
-            ---
-
-            ### 🌟 历史核心特性回顾
-            - **Windows 全面优化**：后台诊断执行全静默（无黑框弹窗），环境变量高速缓存，流畅无卡顿。
-            - **SSO 鉴权双模机制**：除常规浏览器跳转外，支持火山官方内置授权码直连登录，彻底解决本地回环端口限制导致的 `redirect_uri` 报错。
-            - **套餐精准动态识别**：支持精准匹配并展示 Pro 套餐 (🚀)、Team 套餐 (👥)、Lite 套餐 (💎) 与 企业套餐 (🏢)。
-            - **启动自动呼出**：双端启动时自动弹出主卡片窗口并吸附托盘，开箱即用。
-            - **桌面微型悬浮窗**：随时在桌面自由拖拽查看近 5 小时用量状态。
-
-            ---
-
-            ### 📦 安装包下载指引
-            - **macOS (Apple Silicon M1/M2/M3/M4 系列)**: `ArkBar_*_aarch64.dmg`
-            - **macOS (Intel 处理器)**: `ArkBar_*_x64.dmg`
-            - **Windows (64位安装包)**: `ArkBar_*_x64-setup.exe` (或 `.msi`)
+          releaseBody: ${{ steps.release_notes.outputs.body }}
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
