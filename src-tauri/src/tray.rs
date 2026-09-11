@@ -1,5 +1,6 @@
 use tauri::{
     image::Image,
+    menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager,
 };
@@ -14,9 +15,42 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 
     let tray_image = Image::from_bytes(icon_bytes)?;
 
+    let show_i = MenuItem::with_id(app, "show", "打开 ArkBar", true, None::<&str>)?;
+    let float_i = MenuItem::with_id(app, "toggle_float", "切换桌面悬浮窗", true, None::<&str>)?;
+    let quit_i = MenuItem::with_id(app, "quit", "退出 ArkBar", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show_i, &float_i, &quit_i])?;
+
     let mut builder = TrayIconBuilder::with_id("ark-bar-tray")
-        .tooltip("ArkBar - 火山方舟配额监控")
-        .icon(tray_image);
+        .tooltip("ArkBar - 多模型配额监控")
+        .icon(tray_image)
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| {
+            match event.id.as_ref() {
+                "quit" => {
+                    app.exit(0);
+                }
+                "show" => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.move_window_constrained(Position::TrayCenter);
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+                "toggle_float" => {
+                    if let Some(window) = app.get_webview_window("float") {
+                        if window.is_visible().unwrap_or(false) {
+                            let _ = window.hide();
+                        } else {
+                            let _ = window.move_window(Position::TopRight);
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                }
+                _ => {}
+            }
+        });
 
     #[cfg(target_os = "macos")]
     {
@@ -50,6 +84,12 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[tauri::command]
+pub fn exit_app(app: AppHandle) -> Result<(), String> {
+    app.exit(0);
+    Ok(())
+}
+
+#[tauri::command]
 pub fn update_tray_title(app: AppHandle, title: String) -> Result<(), String> {
     if let Some(tray) = app.tray_by_id("ark-bar-tray") {
         #[cfg(target_os = "macos")]
@@ -65,6 +105,16 @@ pub fn update_tray_title(app: AppHandle, title: String) -> Result<(), String> {
             };
             let _ = tray.set_tooltip(Some(&tip));
         }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn show_main_window(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.move_window_constrained(Position::TrayCenter);
+        let _ = window.show();
+        let _ = window.set_focus();
     }
     Ok(())
 }

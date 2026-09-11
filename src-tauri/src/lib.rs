@@ -72,6 +72,7 @@ pub fn run() {
             provider_manager::set_provider_token,
             provider_manager::read_provider_token,
             tray::update_tray_title,
+            tray::show_main_window,
             tray::hide_window,
             tray::open_float_window,
             tray::close_float_window,
@@ -79,6 +80,7 @@ pub fn run() {
             tray::start_drag_move,
             tray::update_drag_move,
             tray::end_drag_move,
+            tray::exit_app,
         ])
         .run(tauri::generate_context!())
         .expect("运行 ArkBar 应用时出错");

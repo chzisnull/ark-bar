@@ -6,10 +6,9 @@ import OnboardingWizard from './components/OnboardingWizard.vue';
 import UsagePanel from './components/UsagePanel.vue';
 import SettingsModal from './components/SettingsModal.vue';
 import FloatingWidget from './components/FloatingWidget.vue';
-import { Loader2 } from 'lucide-vue-next';
 
 const isFloatWindow = ref(window.location.hash === '#float');
-const currentView = ref<'loading' | 'onboarding' | 'panel' | 'settings'>('loading');
+const currentView = ref<'onboarding' | 'panel' | 'settings'>('panel');
 const envStatus = ref<EnvironmentStatus | null>(null);
 const updateInfo = ref<UpdateInfo | null>(null);
 const isRefreshing = ref(false);
@@ -85,10 +84,21 @@ function handleSwitchProvider(provider: ProviderType) {
   activeProvider.value = provider;
   localStorage.setItem('arkbar_active_provider', provider);
   updateTrayTitle();
-  // If no data cached yet, fetch it
   if (!providersData.value[provider]) {
     fetchActiveProviderUsage();
   }
+}
+
+function handleGoAuth(provider: ProviderType) {
+  if (provider === 'volcengine') {
+    currentView.value = 'onboarding';
+  } else {
+    currentView.value = 'settings';
+  }
+}
+
+async function handleRefreshAll() {
+  await Promise.allSettled([checkEnv(), fetchAllUsage()]);
 }
 
 function updateTrayTitle() {
@@ -143,10 +153,10 @@ async function checkAutoUpdate() {
   }
 }
 
-onMounted(async () => {
-  currentView.value = 'loading';
-  await Promise.allSettled([checkEnv(), fetchAllUsage()]);
-  currentView.value = 'panel';
+onMounted(() => {
+  // Non-blocking immediate startup: show panel directly and load data in background
+  checkEnv();
+  fetchAllUsage();
   setupTimer();
   checkAutoUpdate();
 });
@@ -162,21 +172,17 @@ onUnmounted(() => {
 
   <!-- 2. Main Menu Bar Popover Mode -->
   <main v-else class="w-full h-full rounded-2xl bg-[#0e131f] border border-slate-700/60 shadow-2xl overflow-hidden flex flex-col font-sans">
-    <!-- 1. Loading View -->
-    <div v-if="currentView === 'loading'" class="flex-1 flex flex-col items-center justify-center space-y-3">
-      <Loader2 class="w-8 h-8 text-indigo-500 animate-spin" />
-      <span class="text-xs text-slate-400 font-medium">正在检测各大平台配额...</span>
-    </div>
-
-    <!-- 2. Onboarding Wizard (Only when user explicitly asks or Volcano setup needed) -->
+    <!-- 1. Onboarding Wizard -->
     <OnboardingWizard
-      v-else-if="currentView === 'onboarding'"
-      :status="envStatus!"
-      @refresh="fetchAllUsage"
+      v-if="currentView === 'onboarding'"
+      :status="envStatus || { has_node: false, node_version: null, has_npm: false, npm_version: null, has_arkcli: false, arkcli_version: null, logged_in: false, user_name: null, account_id: null, active_profile: null, error_message: null }"
+      @env-updated="envStatus = $event"
+      @refresh="handleRefreshAll"
       @complete="() => { checkEnv(); fetchAllUsage(); currentView = 'panel'; }"
+      @back="currentView = 'panel'"
     />
 
-    <!-- 3. Quota Usage Panel -->
+    <!-- 2. Quota Usage Panel -->
     <UsagePanel
       v-else-if="currentView === 'panel'"
       :providers-data="providersData"
@@ -184,11 +190,12 @@ onUnmounted(() => {
       :is-refreshing="isRefreshing"
       :update-info="updateInfo"
       @switch-provider="handleSwitchProvider"
-      @refresh="fetchAllUsage"
+      @refresh="handleRefreshAll"
+      @go-auth="handleGoAuth"
       @open-settings="currentView = 'settings'"
     />
 
-    <!-- 4. Settings View -->
+    <!-- 3. Settings View -->
     <SettingsModal
       v-else-if="currentView === 'settings'"
       :env-status="envStatus"

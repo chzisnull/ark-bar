@@ -153,6 +153,37 @@ function formatMiniReset(dateStr?: string): string {
   }
 }
 
+const showQuickMenu = ref(false);
+let quickMenuTimer: any = null;
+
+function handleContextMenu(e: MouseEvent) {
+  e.preventDefault();
+  showQuickMenu.value = !showQuickMenu.value;
+  if (showQuickMenu.value) {
+    if (quickMenuTimer) clearTimeout(quickMenuTimer);
+    quickMenuTimer = setTimeout(() => {
+      showQuickMenu.value = false;
+    }, 6000);
+  }
+}
+
+async function openMain() {
+  showQuickMenu.value = false;
+  try {
+    await invoke('show_main_window');
+  } catch (err) {
+    console.error('Failed to show main window:', err);
+  }
+}
+
+async function handleExitApp() {
+  try {
+    await invoke('exit_app');
+  } catch (err) {
+    console.error('Failed to exit app:', err);
+  }
+}
+
 onMounted(() => {
   fetchUsage();
   timer = setInterval(fetchUsage, 10 * 60 * 1000);
@@ -160,6 +191,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (timer) clearInterval(timer);
+  if (quickMenuTimer) clearTimeout(quickMenuTimer);
 });
 </script>
 
@@ -169,68 +201,112 @@ onUnmounted(() => {
     @pointermove="onPointerMove"
     @pointerup="onPointerUp"
     @pointercancel="onPointerCancel"
+    @contextmenu.prevent="handleContextMenu"
     class="w-full h-full select-none flex items-center justify-between px-2.5 py-1 bg-[#0b0f19]/95 text-slate-200 border border-slate-700/60 rounded-xl shadow-2xl backdrop-blur-md cursor-grab active:cursor-grabbing group hover:border-indigo-500/40 transition-colors"
     style="-webkit-user-drag: none; user-select: none;"
   >
-    <!-- Left: Provider Switcher Pill -->
+    <!-- Right-Click Quick Menu Overlay -->
     <div
+      v-if="showQuickMenu"
+      class="w-full h-full flex items-center justify-between px-1 text-[11px] font-medium"
       data-no-drag
-      @click.stop="cycleProvider"
-      class="flex items-center space-x-1.5 cursor-pointer hover:opacity-80 transition py-0.5 px-1 rounded-lg hover:bg-slate-800/60"
-      title="点击切换监控服务商"
     >
-      <span class="text-sm select-none">{{ usageData?.icon || '🌋' }}</span>
-      <span class="text-[10px] font-bold text-slate-300 font-mono">
-        {{ usageData?.provider_name?.split(' ')[0] || 'Ark' }}
-      </span>
+      <button
+        @click.stop="cycleProvider(); showQuickMenu = false;"
+        class="px-1.5 py-1 hover:bg-slate-800 rounded text-slate-300 hover:text-white transition flex items-center gap-1 cursor-pointer"
+        title="切换监控服务商"
+      >
+        <span>🔄</span>
+        <span>切换</span>
+      </button>
+      <button
+        @click.stop="openMain()"
+        class="px-1.5 py-1 hover:bg-slate-800 rounded text-slate-300 hover:text-white transition flex items-center gap-1 cursor-pointer"
+        title="打开主面板"
+      >
+        <span>🪟</span>
+        <span>面板</span>
+      </button>
+      <button
+        @click.stop="closeWidget"
+        class="px-1.5 py-1 hover:bg-slate-800 rounded text-slate-300 hover:text-white transition flex items-center gap-1 cursor-pointer"
+        title="隐藏悬浮窗"
+      >
+        <span>✖</span>
+        <span>隐藏</span>
+      </button>
+      <button
+        @click.stop="handleExitApp"
+        class="px-1.5 py-1 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 rounded transition flex items-center gap-1 font-bold cursor-pointer"
+        title="退出 ArkBar 应用程序"
+      >
+        <span>🚪</span>
+        <span>退出</span>
+      </button>
     </div>
 
-    <!-- Center: Progress & Usage -->
-    <div class="flex-1 mx-2 flex flex-col justify-center space-y-0.5 pointer-events-none">
-      <div class="flex items-center justify-between text-[9px] font-mono leading-none">
-        <span class="text-slate-400 font-sans">
-          {{ currentProvider === 'grok' ? '周期用量' : '5h用量' }}
+    <!-- Normal Floating Pill Display -->
+    <template v-else>
+      <!-- Left: Provider Switcher Pill -->
+      <div
+        data-no-drag
+        @click.stop="cycleProvider"
+        class="flex items-center space-x-1.5 cursor-pointer hover:opacity-80 transition py-0.5 px-1 rounded-lg hover:bg-slate-800/60"
+        title="点击切换监控服务商 (右键呼出菜单)"
+      >
+        <span class="text-sm select-none">{{ usageData?.icon || '🌋' }}</span>
+        <span class="text-[10px] font-bold text-slate-300 font-mono">
+          {{ usageData?.provider_name?.split(' ')[0] || 'Ark' }}
         </span>
-        <div class="flex items-center gap-1">
-          <span v-if="usageData?.primary_reset_at" class="text-slate-500 text-[8px]">
-            {{ formatMiniReset(usageData.primary_reset_at) }}
+      </div>
+
+      <!-- Center: Progress & Usage -->
+      <div class="flex-1 mx-2 flex flex-col justify-center space-y-0.5 pointer-events-none">
+        <div class="flex items-center justify-between text-[9px] font-mono leading-none">
+          <span class="text-slate-400 font-sans">
+            {{ currentProvider === 'grok' ? '周期用量' : '5h用量' }}
           </span>
-          <span v-if="currentPercent !== null" class="font-bold" :class="textColor">
-            {{ currentPercent }}%
-          </span>
-          <span v-else class="text-slate-500">
-            {{ usageData?.is_connected ? '0%' : '未连接' }}
-          </span>
+          <div class="flex items-center gap-1">
+            <span v-if="usageData?.primary_reset_at" class="text-slate-500 text-[8px]">
+              {{ formatMiniReset(usageData.primary_reset_at) }}
+            </span>
+            <span v-if="currentPercent !== null" class="font-bold" :class="textColor">
+              {{ currentPercent }}%
+            </span>
+            <span v-else class="text-slate-500">
+              {{ usageData?.is_connected ? '0%' : (isRefreshing ? '同步中' : '未连接') }}
+            </span>
+          </div>
+        </div>
+        <div class="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden p-0.5">
+          <div
+            class="h-full rounded-full bg-gradient-to-r transition-all duration-300"
+            :class="barColor"
+            :style="{ width: `${currentPercent ?? (usageData?.is_connected ? 0 : (isRefreshing ? 50 : 10))}%` }"
+          ></div>
         </div>
       </div>
-      <div class="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden p-0.5">
-        <div
-          class="h-full rounded-full bg-gradient-to-r transition-all duration-300"
-          :class="barColor"
-          :style="{ width: `${currentPercent ?? (usageData?.is_connected ? 0 : 10)}%` }"
-        ></div>
-      </div>
-    </div>
 
-    <!-- Right: Mini Actions -->
-    <div data-no-drag class="flex items-center space-x-0.5 shrink-0">
-      <button
-        data-no-drag
-        @click.stop="fetchUsage"
-        :disabled="isRefreshing"
-        class="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
-        title="刷新"
-      >
-        <RefreshCw class="w-2.5 h-2.5" :class="{ 'animate-spin': isRefreshing }" />
-      </button>
-      <button
-        data-no-drag
-        @click.stop="closeWidget"
-        class="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-slate-800 transition cursor-pointer"
-        title="关闭悬浮窗"
-      >
-        <X class="w-2.5 h-2.5" />
-      </button>
-    </div>
+      <!-- Right: Mini Actions -->
+      <div data-no-drag class="flex items-center space-x-0.5 shrink-0">
+        <button
+          data-no-drag
+          @click.stop="fetchUsage"
+          :disabled="isRefreshing"
+          class="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
+          title="刷新数据"
+        >
+          <RefreshCw class="w-2.5 h-2.5" :class="{ 'animate-spin': isRefreshing }" />
+        </button>
+        <button
+          data-no-drag
+          @click.stop="closeWidget"
+          class="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-slate-800 transition cursor-pointer"
+          title="关闭悬浮窗"
+        >
+          <X class="w-2.5 h-2.5" />
+        </button>
+      </div>
+    </template>
   </div>
 </template>
