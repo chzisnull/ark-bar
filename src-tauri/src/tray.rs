@@ -1,14 +1,18 @@
 use tauri::{
+    image::Image,
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager,
 };
 use tauri_plugin_positioner::{Position, WindowExt};
 
 pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    let icon_bytes = include_bytes!("../icons/tray-icon@2x.png");
+    let tray_image = Image::from_bytes(icon_bytes)?;
+
     let _tray = TrayIconBuilder::with_id("ark-bar-tray")
         .tooltip("ArkBar - 火山方舟配额监控")
-        .title("ArkBar")
-        .icon(app.default_window_icon().unwrap().clone())
+        .icon(tray_image)
+        .icon_as_template(true)
         .on_tray_icon_event(|tray, event| {
             tauri_plugin_positioner::on_tray_event(tray.app_handle(), &event);
             if let TrayIconEvent::Click {

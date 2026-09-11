@@ -14,8 +14,8 @@
       {
         "label": "main",
         "title": "ArkBar",
-        "width": 360,
-        "height": 520,
+        "width": 380,
+        "height": 550,
         "resizable": false,
         "fullscreen": false,
         "decorations": false,

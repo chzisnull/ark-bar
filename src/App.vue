@@ -50,7 +50,7 @@ async function fetchUsagePlan() {
 
 function updateTrayTitleFromData(data: UsagePlanResponse) {
   if (!showPercentageInTray.value) {
-    invoke('update_tray_title', { title: 'ArkBar' });
+    invoke('update_tray_title', { title: '' });
     return;
   }
 
@@ -59,9 +59,9 @@ function updateTrayTitleFromData(data: UsagePlanResponse) {
   const weekly = item?.periods?.find(p => p.label.toLowerCase() === 'weekly');
   if (weekly && typeof weekly.percent === 'number') {
     const p = Math.round(weekly.percent);
-    invoke('update_tray_title', { title: `⚡ ${p}%` });
+    invoke('update_tray_title', { title: ` ${p}%` });
   } else {
-    invoke('update_tray_title', { title: 'ArkBar' });
+    invoke('update_tray_title', { title: '' });
   }
 }
 
@@ -97,7 +97,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <main class="w-[360px] h-[520px] rounded-2xl bg-slate-900/90 backdrop-blur-2xl border border-slate-700/60 shadow-2xl overflow-hidden flex flex-col font-sans">
+  <main class="w-[380px] h-[550px] rounded-2xl bg-[#0e131f]/95 backdrop-blur-2xl border border-slate-700/60 shadow-2xl overflow-hidden flex flex-col font-sans">
     <!-- 1. Loading View -->
     <div v-if="currentView === 'loading'" class="flex-1 flex flex-col items-center justify-center space-y-3">
       <Loader2 class="w-8 h-8 text-rose-500 animate-spin" />

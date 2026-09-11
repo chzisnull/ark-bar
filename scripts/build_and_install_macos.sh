@@ -22,8 +22,8 @@ if [ -n "$DMG_SRC" ]; then
 fi
 
 echo "==> [3/4] 准备安装至 /Applications/ArkBar.app..."
-pkill -f "/Applications/ArkBar.app/Contents/MacOS/ArkBar" 2>/dev/null || true
-pkill -x ArkBar 2>/dev/null || true
+pkill -f "ArkBar.app/Contents/MacOS/ark-bar" 2>/dev/null || true
+pkill -f "/ark-bar" 2>/dev/null || true
 sleep 1
 
 rm -rf /Applications/ArkBar.app
