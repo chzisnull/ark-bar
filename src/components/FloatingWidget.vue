@@ -24,15 +24,77 @@ async function closeWidget() {
   await invoke('close_float_window');
 }
 
-async function onMouseDown(e: MouseEvent) {
-  if (e.button === 0) {
-    const target = e.target as HTMLElement;
-    if (target.closest('button')) return;
-    try {
-      await invoke('start_drag');
-    } catch (err) {
-      console.error('start_drag failed:', err);
+let isDragging = false;
+let lastScreenX = 0;
+let lastScreenY = 0;
+let accumDx = 0;
+let accumDy = 0;
+let rafId: number | null = null;
+
+function onPointerDown(e: PointerEvent) {
+  if (e.button !== 0) return;
+  const target = e.target as HTMLElement;
+  if (target.closest('button') || target.closest('a')) return;
+
+  isDragging = true;
+  lastScreenX = e.screenX;
+  lastScreenY = e.screenY;
+  accumDx = 0;
+  accumDy = 0;
+
+  try {
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  } catch {}
+
+  // Attempt native OS drag if available
+  invoke('start_drag').catch(() => {});
+}
+
+function onPointerMove(e: PointerEvent) {
+  if (!isDragging) return;
+
+  const dx = e.screenX - lastScreenX;
+  const dy = e.screenY - lastScreenY;
+  lastScreenX = e.screenX;
+  lastScreenY = e.screenY;
+
+  accumDx += dx;
+  accumDy += dy;
+
+  if (!rafId) {
+    rafId = requestAnimationFrame(async () => {
+      rafId = null;
+      if (!isDragging && accumDx === 0 && accumDy === 0) return;
+      const moveX = accumDx;
+      const moveY = accumDy;
+      accumDx = 0;
+      accumDy = 0;
+      if (moveX !== 0 || moveY !== 0) {
+        try {
+          await invoke('drag_move_window', { dx: moveX, dy: moveY });
+        } catch {}
+      }
+    });
+  }
+}
+
+function onPointerUp(e: PointerEvent) {
+  if (isDragging) {
+    isDragging = false;
+    if (rafId) {
+      cancelAnimationFrame(rafId);
+      rafId = null;
     }
+    if (accumDx !== 0 || accumDy !== 0) {
+      const moveX = accumDx;
+      const moveY = accumDy;
+      accumDx = 0;
+      accumDy = 0;
+      invoke('drag_move_window', { dx: moveX, dy: moveY }).catch(() => {});
+    }
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {}
   }
 }
 
@@ -91,10 +153,15 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div @mousedown="onMouseDown" data-tauri-drag-region class="w-[240px] h-[136px] bg-[#0e131f] border border-slate-700/60 rounded-2xl p-2.5 flex flex-col justify-between select-none shadow-2xl overflow-hidden font-sans cursor-move">
-    <!-- Draggable Header -->
-    <div data-tauri-drag-region class="flex items-center justify-between cursor-move pb-1 border-b border-slate-800/60">
-      <div data-tauri-drag-region class="flex items-center space-x-1.5 pointer-events-none">
+  <div
+    @pointerdown="onPointerDown"
+    @pointermove="onPointerMove"
+    @pointerup="onPointerUp"
+    @pointercancel="onPointerUp"
+    class="w-[240px] h-[136px] bg-[#0e131f] border border-slate-700/60 rounded-2xl p-2.5 flex flex-col justify-between select-none shadow-2xl overflow-hidden font-sans cursor-grab active:cursor-grabbing">
+    <!-- Header -->
+    <div class="flex items-center justify-between pb-1 border-b border-slate-800/60">
+      <div class="flex items-center space-x-1.5 pointer-events-none">
         <GripHorizontal class="w-3.5 h-3.5 text-slate-500" />
         <span class="text-[11px] font-bold text-white tracking-wide">ArkBar</span>
         <span class="text-[9px] bg-indigo-500/20 text-indigo-300 px-1 py-0.2 rounded font-mono">
@@ -103,22 +170,22 @@ onUnmounted(() => {
       </div>
 
       <div class="flex items-center space-x-0.5">
-        <button @click="fetchPlan" :disabled="isRefreshing"
-          class="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition" title="刷新">
+        <button @click.stop="fetchPlan" :disabled="isRefreshing"
+          class="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer" title="刷新">
           <RefreshCw class="w-3 h-3" :class="{ 'animate-spin': isRefreshing }" />
         </button>
-        <button @click="closeWidget"
-          class="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-slate-800 transition" title="关闭悬浮框">
+        <button @click.stop="closeWidget"
+          class="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-slate-800 transition cursor-pointer" title="关闭悬浮框">
           <X class="w-3 h-3" />
         </button>
       </div>
     </div>
 
     <!-- 3 Mini Rows -->
-    <div data-tauri-drag-region class="flex-1 flex flex-col justify-around py-1 cursor-move">
+    <div class="flex-1 flex flex-col justify-around py-1 pointer-events-none">
       <!-- Row 1: 5小时 -->
-      <div data-tauri-drag-region class="space-y-0.5">
-        <div data-tauri-drag-region class="flex items-center justify-between text-[10px]">
+      <div class="space-y-0.5">
+        <div class="flex items-center justify-between text-[10px]">
           <span class="text-slate-400">5小时</span>
           <span class="font-mono text-[11px]" :class="getTextColor(sessionPeriod?.percent || 0)">
             {{ sessionPeriod ? sessionPeriod.percent.toFixed(1) : '-' }}%
@@ -133,8 +200,8 @@ onUnmounted(() => {
       </div>
 
       <!-- Row 2: 周用量 -->
-      <div data-tauri-drag-region class="space-y-0.5">
-        <div data-tauri-drag-region class="flex items-center justify-between text-[10px]">
+      <div class="space-y-0.5">
+        <div class="flex items-center justify-between text-[10px]">
           <span class="text-slate-400">本周</span>
           <span class="font-mono text-[11px]" :class="getTextColor(weeklyPeriod?.percent || 0)">
             {{ weeklyPeriod ? weeklyPeriod.percent.toFixed(1) : '-' }}%
@@ -149,8 +216,8 @@ onUnmounted(() => {
       </div>
 
       <!-- Row 3: 月用量 -->
-      <div data-tauri-drag-region class="space-y-0.5">
-        <div data-tauri-drag-region class="flex items-center justify-between text-[10px]">
+      <div class="space-y-0.5">
+        <div class="flex items-center justify-between text-[10px]">
           <span class="text-slate-400">本月</span>
           <span class="font-mono text-[11px]" :class="getTextColor(monthlyPeriod?.percent || 0)">
             {{ monthlyPeriod ? monthlyPeriod.percent.toFixed(1) : '-' }}%

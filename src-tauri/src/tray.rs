@@ -108,3 +108,14 @@ pub fn is_float_window_open(app: AppHandle) -> bool {
 pub fn start_drag(window: tauri::WebviewWindow) -> Result<(), String> {
     window.start_dragging().map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub fn drag_move_window(window: tauri::WebviewWindow, dx: f64, dy: f64) -> Result<(), String> {
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let current_pos = window.outer_position().map_err(|e| e.to_string())?;
+    let phys_dx = (dx * scale).round() as i32;
+    let phys_dy = (dy * scale).round() as i32;
+    let new_pos = tauri::PhysicalPosition::new(current_pos.x + phys_dx, current_pos.y + phys_dy);
+    window.set_position(new_pos).map_err(|e| e.to_string())?;
+    Ok(())
+}

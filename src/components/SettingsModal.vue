@@ -25,7 +25,7 @@ const updateResult = ref<UpdateInfo | null>(props.initialUpdateInfo || null);
 const updateError = ref('');
 const isFloatOpen = ref(false);
 const showUpdateModal = ref(false);
-const appVersion = computed(() => updateResult.value?.current_version || props.initialUpdateInfo?.current_version || '0.1.3');
+const appVersion = computed(() => updateResult.value?.current_version || props.initialUpdateInfo?.current_version || '0.1.4');
 
 async function toggleFloatWindow() {
   if (isFloatOpen.value) {

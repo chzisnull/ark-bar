@@ -67,6 +67,7 @@ pub fn run() {
             tray::close_float_window,
             tray::is_float_window_open,
             tray::start_drag,
+            tray::drag_move_window,
         ])
         .run(tauri::generate_context!())
         .expect("运行 ArkBar 应用时出错");
