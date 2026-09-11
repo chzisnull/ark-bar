@@ -1,6 +1,7 @@
 mod env_resolver;
 mod ark_cli;
 mod tray;
+mod updater;
 
 use tauri::Manager;
 use tauri_plugin_positioner::{Position, WindowExt};
@@ -59,6 +60,7 @@ pub fn run() {
             ark_cli::login_with_code,
             ark_cli::get_usage_plan,
             ark_cli::check_for_updates,
+            updater::install_app_update,
             tray::update_tray_title,
             tray::hide_window,
             tray::open_float_window,

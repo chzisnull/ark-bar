@@ -31,6 +31,7 @@ pub struct UpdateInfo {
     pub latest_version: String,
     pub release_url: String,
     pub release_notes: String,
+    pub download_url: Option<String>,
 }
 
 #[tauri::command]
@@ -291,6 +292,24 @@ pub fn check_for_updates() -> Result<UpdateInfo, String> {
                         .to_string();
 
                     let has_update = is_newer_version(&latest_version, &current_version);
+                    let asset_file = crate::updater::get_platform_asset_filename(&latest_version);
+                    let mut download_url = Some(format!(
+                        "https://github.com/{}/releases/download/v{}/{}",
+                        repo, latest_version, asset_file
+                    ));
+
+                    if let Some(assets) = json_val.get("assets").and_then(|a| a.as_array()) {
+                        for asset in assets {
+                            if let Some(name) = asset.get("name").and_then(|n| n.as_str()) {
+                                if name == asset_file {
+                                    if let Some(url) = asset.get("browser_download_url").and_then(|u| u.as_str()) {
+                                        download_url = Some(url.to_string());
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
 
                     return Ok(UpdateInfo {
                         has_update,
@@ -298,6 +317,7 @@ pub fn check_for_updates() -> Result<UpdateInfo, String> {
                         latest_version,
                         release_url,
                         release_notes,
+                        download_url,
                     });
                 }
             }
@@ -315,12 +335,18 @@ pub fn check_for_updates() -> Result<UpdateInfo, String> {
                 if let Some(tag) = loc.split("/tag/").nth(1) {
                     let latest_version = tag.trim_start_matches('v').to_string();
                     let has_update = is_newer_version(&latest_version, &current_version);
+                    let asset_file = crate::updater::get_platform_asset_filename(&latest_version);
+                    let download_url = Some(format!(
+                        "https://github.com/{}/releases/download/v{}/{}",
+                        repo, latest_version, asset_file
+                    ));
                     return Ok(UpdateInfo {
                         has_update,
                         current_version,
                         latest_version,
                         release_url: loc.to_string(),
-                        release_notes: "发现新版本，请前往 GitHub Releases 页面下载安装包更新。".to_string(),
+                        release_notes: "发现新版本，支持应用内一键在线极速更新。".to_string(),
+                        download_url,
                     });
                 }
             }
@@ -333,6 +359,7 @@ pub fn check_for_updates() -> Result<UpdateInfo, String> {
         latest_version: current_version,
         release_url: format!("https://github.com/{}/releases", repo),
         release_notes: "当前已是最新版本".to_string(),
+        download_url: None,
     })
 }
 

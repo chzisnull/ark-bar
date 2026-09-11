@@ -2,8 +2,9 @@
 import { ref, computed, onMounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { EnvironmentStatus, UpdateInfo } from '../types';
-import { ArrowLeft, RefreshCw, Download, CheckCircle2, AlertCircle, Power, Layout } from 'lucide-vue-next';
+import { ArrowLeft, RefreshCw, Download, CheckCircle2, AlertCircle, Power, Layout, ExternalLink } from 'lucide-vue-next';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import UpdateModal from './UpdateModal.vue';
 
 const props = defineProps<{
   envStatus: EnvironmentStatus | null;
@@ -23,7 +24,8 @@ const isCheckingUpdate = ref(false);
 const updateResult = ref<UpdateInfo | null>(props.initialUpdateInfo || null);
 const updateError = ref('');
 const isFloatOpen = ref(false);
-const appVersion = computed(() => props.initialUpdateInfo?.current_version || '0.1.1');
+const showUpdateModal = ref(false);
+const appVersion = computed(() => updateResult.value?.current_version || props.initialUpdateInfo?.current_version || '0.1.3');
 
 async function toggleFloatWindow() {
   if (isFloatOpen.value) {
@@ -159,21 +161,31 @@ onMounted(async () => {
           </div>
 
           <div v-if="updateResult" class="pt-2 border-t border-slate-700/60">
-            <div v-if="updateResult.has_update" class="p-2.5 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+            <div v-if="updateResult.has_update" class="p-2.5 bg-amber-500/10 border border-amber-500/30 rounded-xl space-y-2">
               <div class="flex items-center justify-between text-amber-300 font-medium">
-                <span class="flex items-center gap-1.5">
-                  <AlertCircle class="w-3.5 h-3.5" />
+                <span class="flex items-center gap-1.5 font-bold text-xs">
+                  <AlertCircle class="w-3.5 h-3.5 text-amber-400" />
                   发现新版本 v{{ updateResult.latest_version }}
                 </span>
-                <button @click="openReleaseUrl"
-                  class="px-2 py-0.5 bg-amber-500 text-slate-950 font-semibold rounded text-[10px] flex items-center gap-1">
-                  <Download class="w-3 h-3" />
-                  下载更新
-                </button>
+                <span class="text-[10px] text-amber-400/80 font-mono">
+                  (当前: v{{ updateResult.current_version }})
+                </span>
               </div>
-              <p v-if="updateResult.release_notes" class="text-[10px] text-slate-400 mt-1 line-clamp-2">
+              <p v-if="updateResult.release_notes" class="text-[10px] text-slate-300 line-clamp-2 leading-relaxed">
                 {{ updateResult.release_notes }}
               </p>
+              <div class="pt-1 flex items-center justify-end gap-1.5">
+                <button @click="openReleaseUrl"
+                  class="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium rounded-lg text-[10px] flex items-center gap-1 transition">
+                  <ExternalLink class="w-2.5 h-2.5 text-slate-400" />
+                  网页下载
+                </button>
+                <button @click="showUpdateModal = true"
+                  class="px-2.5 py-1 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-bold rounded-lg text-[10px] flex items-center gap-1 transition shadow-sm">
+                  <Download class="w-2.5 h-2.5" />
+                  立即在线更新
+                </button>
+              </div>
             </div>
             <div v-else class="flex items-center gap-1.5 text-emerald-400 text-[11px]">
               <CheckCircle2 class="w-3.5 h-3.5" />
@@ -226,5 +238,12 @@ onMounted(async () => {
         </button>
       </div>
     </div>
+
+    <!-- In-App Online Update Modal -->
+    <UpdateModal
+      v-if="showUpdateModal && updateResult"
+      :update-info="updateResult"
+      @close="showUpdateModal = false"
+    />
   </div>
 </template>

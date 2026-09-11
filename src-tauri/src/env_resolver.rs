@@ -109,26 +109,28 @@ pub fn init_effective_path() {
     });
 }
 
-pub fn execute_cmd(cmd: &str, args: &[&str]) -> Result<Output, String> {
+pub fn create_command(cmd: &str) -> Command {
     init_effective_path();
 
     #[cfg(target_os = "windows")]
-    let mut command = {
+    {
         // 0x08000000 = CREATE_NO_WINDOW, ensures cmd.exe never pops up a black console window!
         const CREATE_NO_WINDOW: u32 = 0x08000000;
         let mut c = Command::new("cmd.exe");
         c.creation_flags(CREATE_NO_WINDOW);
-        c.arg("/C").arg(cmd).args(args);
+        c.arg("/C").arg(cmd);
         c
-    };
+    }
 
     #[cfg(not(target_os = "windows"))]
-    let mut command = {
-        let mut c = Command::new(cmd);
-        c.args(args);
-        c
-    };
+    {
+        Command::new(cmd)
+    }
+}
 
+pub fn execute_cmd(cmd: &str, args: &[&str]) -> Result<Output, String> {
+    let mut command = create_command(cmd);
+    command.args(args);
     command
         .env("ARKCLI_NO_UPDATE_NOTIFIER", "1")
         .output()

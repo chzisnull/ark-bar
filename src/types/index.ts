@@ -55,4 +55,13 @@ export interface UpdateInfo {
   latest_version: string;
   release_url: string;
   release_notes: string;
+  download_url?: string;
+}
+
+export interface UpdateProgress {
+  stage: 'preparing' | 'downloading' | 'extracting' | 'installing' | 'restarting' | 'error' | 'done';
+  percent: number;
+  current_bytes: number;
+  total_bytes: number;
+  message: string;
 }

@@ -3,6 +3,7 @@ import { ref, computed } from 'vue';
 import type { UsagePlanResponse, PlanItem, Period, UpdateInfo } from '../types';
 import { RefreshCw, ExternalLink, Settings, Clock, User, Shield, AlertTriangle, Sparkles, Download, X } from 'lucide-vue-next';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import UpdateModal from './UpdateModal.vue';
 
 const props = defineProps<{
   planData: UsagePlanResponse | null;
@@ -11,6 +12,7 @@ const props = defineProps<{
 }>();
 
 const bannerDismissed = ref(false);
+const showUpdateModal = ref(false);
 
 const emit = defineEmits<{
   (e: 'refresh'): void;
@@ -99,16 +101,6 @@ async function openConsole() {
     window.open(targetUrl, '_blank');
   }
 }
-
-async function openReleaseUrl() {
-  if (props.updateInfo?.release_url) {
-    try {
-      await openUrl(props.updateInfo.release_url);
-    } catch {
-      window.open(props.updateInfo.release_url, '_blank');
-    }
-  }
-}
 </script>
 
 <template>
@@ -155,7 +147,7 @@ async function openReleaseUrl() {
         </div>
       </div>
       <div class="flex items-center space-x-1.5 flex-shrink-0 ml-2">
-        <button @click="openReleaseUrl"
+        <button @click="showUpdateModal = true"
           class="px-2 py-0.5 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-bold rounded-md text-[10px] flex items-center gap-1 transition shadow-sm">
           <Download class="w-2.5 h-2.5" />
           <span>立即更新</span>
@@ -309,5 +301,12 @@ async function openReleaseUrl() {
         5–30 min 延迟
       </span>
     </div>
+
+    <!-- In-App Online Update Modal -->
+    <UpdateModal
+      v-if="showUpdateModal && updateInfo"
+      :update-info="updateInfo"
+      @close="showUpdateModal = false"
+    />
   </div>
 </template>
