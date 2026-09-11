@@ -184,42 +184,80 @@ pub fn get_usage_plan() -> Result<Value, String> {
     }
 }
 
+fn is_newer_version(latest: &str, current: &str) -> bool {
+    let parse_parts = |v: &str| -> Vec<u32> {
+        v.split('.')
+            .filter_map(|s| s.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().ok())
+            .collect()
+    };
+    let l_parts = parse_parts(latest);
+    let c_parts = parse_parts(current);
+    for (l, c) in l_parts.iter().zip(c_parts.iter()) {
+        if l > c {
+            return true;
+        } else if l < c {
+            return false;
+        }
+    }
+    l_parts.len() > c_parts.len()
+}
+
 #[tauri::command]
 pub fn check_for_updates() -> Result<UpdateInfo, String> {
     let current_version = env!("CARGO_PKG_VERSION").to_string();
     let repo = "chzisnull/ark-bar";
-    let url = format!("https://api.github.com/repos/{}/releases/latest", repo);
+    let api_url = format!("https://api.github.com/repos/{}/releases/latest", repo);
 
-    // Use curl which is always available on macOS / Linux
-    let output = execute_cmd("curl", &["-s", "--max-time", "3", "-H", "User-Agent: ark-bar-app", &url])
-        .map_err(|e| format!("网络请求失败: {}", e))?;
+    // 1. Try GitHub Releases API first (gets release notes & tag)
+    if let Ok(output) = execute_cmd("curl", &["-s", "--max-time", "3", "-H", "User-Agent: ark-bar-app", &api_url]) {
+        if output.status.success() {
+            let body = String::from_utf8_lossy(&output.stdout);
+            if let Ok(json_val) = serde_json::from_str::<Value>(&body) {
+                if let Some(tag_name) = json_val.get("tag_name").and_then(|v| v.as_str()) {
+                    let latest_version = tag_name.trim_start_matches('v').to_string();
+                    let release_url = json_val.get("html_url")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(&format!("https://github.com/{}/releases", repo))
+                        .to_string();
+                    let release_notes = json_val.get("body")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
 
-    if !output.status.success() {
-        return Err("GitHub API 响应失败".to_string());
+                    let has_update = is_newer_version(&latest_version, &current_version);
+
+                    return Ok(UpdateInfo {
+                        has_update,
+                        current_version,
+                        latest_version,
+                        release_url,
+                        release_notes,
+                    });
+                }
+            }
+        }
     }
 
-    let body = String::from_utf8_lossy(&output.stdout);
-    if let Ok(json_val) = serde_json::from_str::<Value>(&body) {
-        if let Some(tag_name) = json_val.get("tag_name").and_then(|v| v.as_str()) {
-            let latest_version = tag_name.trim_start_matches('v').to_string();
-            let release_url = json_val.get("html_url")
-                .and_then(|v| v.as_str())
-                .unwrap_or("https://github.com/chzisnull/ark-bar/releases")
-                .to_string();
-            let release_notes = json_val.get("body")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-
-            let has_update = latest_version != current_version && !latest_version.is_empty();
-
-            return Ok(UpdateInfo {
-                has_update,
-                current_version,
-                latest_version,
-                release_url,
-                release_notes,
-            });
+    // 2. Fallback: GitHub Releases redirect (bypasses 60 req/hr API limit)
+    let redirect_url = format!("https://github.com/{}/releases/latest", repo);
+    if let Ok(output) = execute_cmd("curl", &["-sI", "--max-time", "3", "-A", "ark-bar-app", &redirect_url]) {
+        let headers = String::from_utf8_lossy(&output.stdout);
+        for line in headers.lines() {
+            let lower = line.to_lowercase();
+            if lower.starts_with("location:") {
+                let loc = line["location:".len()..].trim();
+                if let Some(tag) = loc.split("/tag/").nth(1) {
+                    let latest_version = tag.trim_start_matches('v').to_string();
+                    let has_update = is_newer_version(&latest_version, &current_version);
+                    return Ok(UpdateInfo {
+                        has_update,
+                        current_version,
+                        latest_version,
+                        release_url: loc.to_string(),
+                        release_notes: "发现新版本，请前往 GitHub Releases 页面下载安装包更新。".to_string(),
+                    });
+                }
+            }
         }
     }
 
@@ -263,5 +301,15 @@ mod tests {
         let val = parsed.unwrap();
         assert_eq!(val["items"][0]["seat_id"], "seat-test-123");
         assert_eq!(val["items"][0]["periods"][1]["percent"], 40.0);
+    }
+
+    #[test]
+    fn test_is_newer_version() {
+        assert!(is_newer_version("0.1.1", "0.1.0"));
+        assert!(is_newer_version("1.0.0", "0.9.9"));
+        assert!(is_newer_version("0.2.0", "0.1.9"));
+        assert!(!is_newer_version("0.1.0", "0.1.0"));
+        assert!(!is_newer_version("0.1.0", "0.1.1"));
+        assert!(!is_newer_version("0.0.9", "0.1.0"));
     }
 }

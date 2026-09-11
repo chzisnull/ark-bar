@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { EnvironmentStatus, UpdateInfo } from '../types';
 import { ArrowLeft, RefreshCw, Download, CheckCircle2, AlertCircle, Power, Layout } from 'lucide-vue-next';
@@ -9,6 +9,7 @@ const props = defineProps<{
   envStatus: EnvironmentStatus | null;
   refreshInterval: number; // in minutes
   showPercentageInTray: boolean;
+  initialUpdateInfo?: UpdateInfo | null;
 }>();
 
 const emit = defineEmits<{
@@ -19,9 +20,10 @@ const emit = defineEmits<{
 }>();
 
 const isCheckingUpdate = ref(false);
-const updateResult = ref<UpdateInfo | null>(null);
+const updateResult = ref<UpdateInfo | null>(props.initialUpdateInfo || null);
 const updateError = ref('');
 const isFloatOpen = ref(false);
+const appVersion = computed(() => props.initialUpdateInfo?.current_version || '0.1.1');
 
 async function toggleFloatWindow() {
   if (isFloatOpen.value) {
@@ -80,7 +82,7 @@ onMounted(async () => {
         </button>
         <h3 class="text-xs font-bold text-white tracking-wide">偏好设置与关于</h3>
       </div>
-      <span class="text-[10px] font-mono text-slate-500">v0.1.0</span>
+      <span class="text-[10px] font-mono text-slate-500">v{{ appVersion }}</span>
     </div>
 
     <!-- Content Sections -->

@@ -6,13 +6,24 @@ use tauri::{
 use tauri_plugin_positioner::{Position, WindowExt};
 
 pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "macos")]
     let icon_bytes = include_bytes!("../icons/tray-icon@2x.png");
+
+    #[cfg(not(target_os = "macos"))]
+    let icon_bytes = include_bytes!("../icons/32x32.png");
+
     let tray_image = Image::from_bytes(icon_bytes)?;
 
-    let _tray = TrayIconBuilder::with_id("ark-bar-tray")
+    let mut builder = TrayIconBuilder::with_id("ark-bar-tray")
         .tooltip("ArkBar - 火山方舟配额监控")
-        .icon(tray_image)
-        .icon_as_template(true)
+        .icon(tray_image);
+
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.icon_as_template(true);
+    }
+
+    let _tray = builder
         .on_tray_icon_event(|tray, event| {
             tauri_plugin_positioner::on_tray_event(tray.app_handle(), &event);
             if let TrayIconEvent::Click {
@@ -26,7 +37,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     if window.is_visible().unwrap_or(false) {
                         let _ = window.hide();
                     } else {
-                        let _ = window.move_window(Position::TrayCenter);
+                        let _ = window.move_window_constrained(Position::TrayCenter);
                         let _ = window.show();
                         let _ = window.set_focus();
                     }
@@ -41,7 +52,19 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 #[tauri::command]
 pub fn update_tray_title(app: AppHandle, title: String) -> Result<(), String> {
     if let Some(tray) = app.tray_by_id("ark-bar-tray") {
+        #[cfg(target_os = "macos")]
         let _ = tray.set_title(Some(&title));
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let trimmed = title.trim();
+            let tip = if trimmed.is_empty() {
+                "ArkBar - 火山方舟配额监控".to_string()
+            } else {
+                format!("ArkBar - 火山方舟配额监控 [{}]", trimmed)
+            };
+            let _ = tray.set_tooltip(Some(&tip));
+        }
     }
     Ok(())
 }

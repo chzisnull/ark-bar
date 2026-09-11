@@ -51,7 +51,28 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: 'ArkBar v__VERSION__'
-          releaseBody: 'ArkBar 火山方舟 Coding Plan 状态栏监控小工具最新发布。'
-          releaseDraft: true
+          releaseBody: |
+            ## ArkBar v__VERSION__ 发布说明
+
+            ### 🌟 新增特性与跨平台支持
+            - **Windows 全面支持**：
+              - 任务栏托盘自适应定位与弹出，完美贴合 Windows 任务栏。
+              - 支持免管理员权限安装（NSIS 当前用户安装）。
+              - 全面兼容 Windows 全局 npm / Node 运行路径与 `cmd.exe /C` 命令执行。
+            - **全平台自动检查版本更新**：
+              - 双端（macOS / Windows）应用启动静默检查 GitHub Releases 最新版本。
+              - 发现新版本在用量面板顶部展示醒目通知，支持一键直达下载更新。
+              - 防 GitHub API 速率限制（支持 GitHub Releases 自动重定向与语义化版本比对）。
+            - **桌面可拖拽悬浮窗**：
+              - 设置中支持一键开启桌面置顶微型卡片，随时查看 5 小时用量与额度状态。
+            - **视觉体验升级**：
+              - 极简单色菜单栏图标，顶栏展示近 5 小时滑动窗口用量。
+              - 完美对齐火山方舟官方控制台 0%/50%/90% 渐变刻度与警戒线。
+
+            ### 📦 安装包下载指引
+            - **macOS (Apple Silicon M系列)**: `ArkBar_*_aarch64.dmg`
+            - **macOS (Intel芯片)**: `ArkBar_*_x64.dmg`
+            - **Windows (64位)**: `ArkBar_*_x64-setup.exe` (或 `.msi`)
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}

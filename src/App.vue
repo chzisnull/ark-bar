@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import type { EnvironmentStatus, UsagePlanResponse } from './types';
+import type { EnvironmentStatus, UsagePlanResponse, UpdateInfo } from './types';
 import OnboardingWizard from './components/OnboardingWizard.vue';
 import UsagePanel from './components/UsagePanel.vue';
 import SettingsModal from './components/SettingsModal.vue';
@@ -12,6 +12,7 @@ const isFloatWindow = ref(window.location.hash === '#float');
 const currentView = ref<'loading' | 'onboarding' | 'panel' | 'settings'>('loading');
 const envStatus = ref<EnvironmentStatus | null>(null);
 const planData = ref<UsagePlanResponse | null>(null);
+const updateInfo = ref<UpdateInfo | null>(null);
 const isRefreshing = ref(false);
 const refreshInterval = ref(15); // in minutes
 const showPercentageInTray = ref(true);
@@ -88,9 +89,20 @@ watch(showPercentageInTray, () => {
   }
 });
 
+async function checkAutoUpdate() {
+  try {
+    const res = await invoke<UpdateInfo>('check_for_updates');
+    updateInfo.value = res;
+  } catch (err) {
+    console.debug('Auto update check skipped/failed:', err);
+  }
+}
+
 onMounted(async () => {
   await checkEnv();
   setupTimer();
+  // Silently check for updates on startup
+  checkAutoUpdate();
 });
 
 onUnmounted(() => {
@@ -123,6 +135,7 @@ onUnmounted(() => {
       v-else-if="currentView === 'panel'"
       :plan-data="planData"
       :is-refreshing="isRefreshing"
+      :update-info="updateInfo"
       @refresh="fetchUsagePlan"
       @open-settings="currentView = 'settings'"
     />
@@ -133,6 +146,7 @@ onUnmounted(() => {
       :env-status="envStatus"
       :refresh-interval="refreshInterval"
       :show-percentage-in-tray="showPercentageInTray"
+      :initial-update-info="updateInfo"
       @close="currentView = 'panel'"
       @update-interval="refreshInterval = $event"
       @update-tray-mode="showPercentageInTray = $event"

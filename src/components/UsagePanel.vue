@@ -1,13 +1,16 @@
 <script setup lang="ts">
-import { computed } from 'vue';
-import type { UsagePlanResponse, PlanItem, Period } from '../types';
-import { RefreshCw, ExternalLink, Settings, Clock, User, Shield, AlertTriangle } from 'lucide-vue-next';
+import { ref, computed } from 'vue';
+import type { UsagePlanResponse, PlanItem, Period, UpdateInfo } from '../types';
+import { RefreshCw, ExternalLink, Settings, Clock, User, Shield, AlertTriangle, Sparkles, Download, X } from 'lucide-vue-next';
 import { openUrl } from '@tauri-apps/plugin-opener';
 
 const props = defineProps<{
   planData: UsagePlanResponse | null;
   isRefreshing: boolean;
+  updateInfo?: UpdateInfo | null;
 }>();
+
+const bannerDismissed = ref(false);
 
 const emit = defineEmits<{
   (e: 'refresh'): void;
@@ -83,6 +86,16 @@ async function openConsole() {
     window.open(targetUrl, '_blank');
   }
 }
+
+async function openReleaseUrl() {
+  if (props.updateInfo?.release_url) {
+    try {
+      await openUrl(props.updateInfo.release_url);
+    } catch {
+      window.open(props.updateInfo.release_url, '_blank');
+    }
+  }
+}
 </script>
 
 <template>
@@ -115,6 +128,28 @@ async function openConsole() {
         <button @click="$emit('open-settings')"
           class="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800/80 transition" title="设置">
           <Settings class="w-3.5 h-3.5" />
+        </button>
+      </div>
+    </div>
+
+    <!-- Automatic Update Notification Banner -->
+    <div v-if="updateInfo?.has_update && !bannerDismissed"
+      class="mx-3 mt-2 px-3 py-2 bg-gradient-to-r from-amber-500/15 via-orange-500/15 to-indigo-500/15 border border-amber-500/30 rounded-xl flex items-center justify-between text-xs shadow-sm">
+      <div class="flex items-center space-x-2 truncate">
+        <Sparkles class="w-3.5 h-3.5 text-amber-400 flex-shrink-0 animate-pulse" />
+        <div class="truncate">
+          <span class="font-medium text-amber-300 text-[11px]">发现新版本 v{{ updateInfo.latest_version }}</span>
+        </div>
+      </div>
+      <div class="flex items-center space-x-1.5 flex-shrink-0 ml-2">
+        <button @click="openReleaseUrl"
+          class="px-2 py-0.5 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-bold rounded-md text-[10px] flex items-center gap-1 transition shadow-sm">
+          <Download class="w-2.5 h-2.5" />
+          <span>立即更新</span>
+        </button>
+        <button @click="bannerDismissed = true"
+          class="p-0.5 rounded text-slate-500 hover:text-slate-300 transition" title="忽略">
+          <X class="w-3 h-3" />
         </button>
       </div>
     </div>
