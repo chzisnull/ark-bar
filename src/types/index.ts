@@ -65,3 +65,43 @@ export interface UpdateProgress {
   total_bytes: number;
   message: string;
 }
+
+export type ProviderType = 'volcengine' | 'antigravity' | 'grok' | 'codex';
+
+export interface ProviderQuotaPeriod {
+  label: string;
+  name: string;
+  used_percent: number;
+  remaining_percent: number;
+  reset_at?: string;
+  used?: number;
+  total?: number;
+  description?: string;
+}
+
+export interface ProviderPlanGroup {
+  group_name: string;
+  edition?: string;
+  periods: ProviderQuotaPeriod[];
+}
+
+export interface ProviderAccountInfo {
+  user_name?: string;
+  email?: string;
+  account_id?: string;
+  plan_name?: string;
+}
+
+export interface ProviderUsageData {
+  provider: ProviderType;
+  provider_name: string;
+  icon: string;
+  is_connected: boolean;
+  status_message?: string;
+  error_message?: string;
+  account_info?: ProviderAccountInfo;
+  groups: ProviderPlanGroup[];
+  primary_session_percent?: number;
+  primary_reset_at?: string;
+  console_url?: string;
+}

@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use crate::env_resolver::execute_cmd;
+use crate::provider_models::{
+    ProviderAccountInfo, ProviderPlanGroup, ProviderQuotaPeriod, ProviderUsageData,
+};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct EnvironmentStatus {
@@ -248,6 +251,128 @@ pub fn get_usage_plan() -> Result<Value, String> {
             }
         }
         Err(e) => Err(format!("无法运行 arkcli: {}", e)),
+    }
+}
+
+pub fn get_volcengine_usage() -> ProviderUsageData {
+    let env_status = check_environment();
+    if !env_status.has_arkcli || !env_status.logged_in {
+        return ProviderUsageData {
+            provider: "volcengine".to_string(),
+            provider_name: "火山方舟".to_string(),
+            icon: "🌋".to_string(),
+            is_connected: false,
+            status_message: Some("未登录火山方舟或未安装 arkcli".to_string()),
+            error_message: env_status.error_message,
+            account_info: Some(ProviderAccountInfo {
+                user_name: env_status.user_name,
+                email: None,
+                account_id: env_status.account_id,
+                plan_name: Some("Coding Plan".to_string()),
+            }),
+            groups: Vec::new(),
+            primary_session_percent: None,
+            primary_reset_at: None,
+            console_url: Some("https://console.volcengine.com/ark/region:cn-beijing/subscription/coding-plan-enterprise".to_string()),
+        };
+    }
+
+    match get_usage_plan() {
+        Ok(json_val) => {
+            let mut groups = Vec::new();
+            let mut primary_session_percent = None;
+            let mut primary_reset_at = None;
+
+            if let Some(items) = json_val.get("items").and_then(|i| i.as_array()) {
+                for item in items {
+                    let product = item.get("product").and_then(|p| p.as_str()).unwrap_or("Coding Plan").to_string();
+                    let edition = item.get("edition").and_then(|e| e.as_str()).unwrap_or("Enterprise").to_string();
+                    let mut periods = Vec::new();
+
+                    if let Some(pers) = item.get("periods").and_then(|p| p.as_array()) {
+                        for p in pers {
+                            let label = p.get("label").and_then(|l| l.as_str()).unwrap_or("").to_lowercase();
+                            let percent = p.get("percent").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                            let reset_at = p.get("reset_at").and_then(|r| r.as_str()).map(|s| s.to_string());
+                            let used = p.get("used").and_then(|u| u.as_f64());
+                            let total = p.get("total").and_then(|t| t.as_f64());
+
+                            let name = match label.as_str() {
+                                "session" => "近5小时用量".to_string(),
+                                "weekly" => "近一周用量".to_string(),
+                                "monthly" => "近一月用量".to_string(),
+                                other => other.to_string(),
+                            };
+
+                            if label == "session" && primary_session_percent.is_none() {
+                                primary_session_percent = Some(percent);
+                                primary_reset_at = reset_at.clone();
+                            }
+
+                            periods.push(ProviderQuotaPeriod {
+                                label,
+                                name,
+                                used_percent: (percent * 10.0).round() / 10.0,
+                                remaining_percent: ((100.0 - percent).clamp(0.0, 100.0) * 10.0).round() / 10.0,
+                                reset_at,
+                                used,
+                                total,
+                                description: None,
+                            });
+                        }
+                    }
+
+                    groups.push(ProviderPlanGroup {
+                        group_name: product,
+                        edition: Some(format!("{} 套餐", edition)),
+                        periods,
+                    });
+                }
+            }
+
+            let viewer = json_val.get("viewer");
+            let user_name = viewer.and_then(|v| v.get("user_name")).and_then(|u| u.as_str()).map(|s| s.to_string())
+                .or(env_status.user_name);
+            let account_id = viewer.and_then(|v| v.get("account_id")).and_then(|a| a.as_str()).map(|s| s.to_string())
+                .or(env_status.account_id);
+
+            ProviderUsageData {
+                provider: "volcengine".to_string(),
+                provider_name: "火山方舟".to_string(),
+                icon: "🌋".to_string(),
+                is_connected: true,
+                status_message: Some("在线同步成功".to_string()),
+                error_message: None,
+                account_info: Some(ProviderAccountInfo {
+                    user_name,
+                    email: None,
+                    account_id,
+                    plan_name: Some("Coding Plan".to_string()),
+                }),
+                groups,
+                primary_session_percent,
+                primary_reset_at,
+                console_url: Some("https://console.volcengine.com/ark/region:cn-beijing/subscription/coding-plan-enterprise".to_string()),
+            }
+        }
+        Err(e) => ProviderUsageData {
+            provider: "volcengine".to_string(),
+            provider_name: "火山方舟".to_string(),
+            icon: "🌋".to_string(),
+            is_connected: false,
+            status_message: Some("获取火山方舟配额失败".to_string()),
+            error_message: Some(e),
+            account_info: Some(ProviderAccountInfo {
+                user_name: env_status.user_name,
+                email: None,
+                account_id: env_status.account_id,
+                plan_name: Some("Coding Plan".to_string()),
+            }),
+            groups: Vec::new(),
+            primary_session_percent: None,
+            primary_reset_at: None,
+            console_url: Some("https://console.volcengine.com/ark/region:cn-beijing/subscription/coding-plan-enterprise".to_string()),
+        }
     }
 }
 

@@ -2,6 +2,12 @@ mod env_resolver;
 mod ark_cli;
 mod tray;
 mod updater;
+mod provider_models;
+mod provider_antigravity;
+mod provider_grok;
+mod provider_codex;
+mod token_store;
+mod provider_manager;
 
 use tauri::Manager;
 use tauri_plugin_positioner::{Position, WindowExt};
@@ -61,6 +67,10 @@ pub fn run() {
             ark_cli::get_usage_plan,
             ark_cli::check_for_updates,
             updater::install_app_update,
+            provider_manager::get_unified_usage,
+            provider_manager::get_all_providers_usage,
+            provider_manager::set_provider_token,
+            provider_manager::read_provider_token,
             tray::update_tray_title,
             tray::hide_window,
             tray::open_float_window,

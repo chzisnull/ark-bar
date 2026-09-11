@@ -1,23 +1,39 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import type { UsagePlanResponse, PlanItem, Period } from '../types';
-import { X, RefreshCw, GripHorizontal } from 'lucide-vue-next';
+import type { ProviderType, ProviderUsageData } from '../types';
+import { X, RefreshCw } from 'lucide-vue-next';
 
-const planData = ref<UsagePlanResponse | null>(null);
+const currentProvider = ref<ProviderType>(
+  (localStorage.getItem('arkbar_float_provider') as ProviderType) || 'volcengine'
+);
+
+const usageData = ref<ProviderUsageData | null>(null);
 const isRefreshing = ref(false);
 let timer: any = null;
 
-async function fetchPlan() {
+async function fetchUsage() {
   isRefreshing.value = true;
   try {
-    const data = await invoke<UsagePlanResponse>('get_usage_plan');
-    planData.value = data;
+    const data = await invoke<ProviderUsageData>('get_unified_usage', {
+      provider: currentProvider.value,
+      customToken: null,
+    });
+    usageData.value = data;
   } catch (err) {
-    console.error('Floating widget failed to fetch plan:', err);
+    console.error('Floating widget fetch failed:', err);
   } finally {
     isRefreshing.value = false;
   }
+}
+
+function cycleProvider() {
+  const ids: ProviderType[] = ['volcengine', 'antigravity', 'grok', 'codex'];
+  const curIdx = ids.indexOf(currentProvider.value);
+  const nextIdx = (curIdx + 1) % ids.length;
+  currentProvider.value = ids[nextIdx];
+  localStorage.setItem('arkbar_float_provider', currentProvider.value);
+  fetchUsage();
 }
 
 async function closeWidget() {
@@ -46,7 +62,6 @@ function onPointerDown(e: PointerEvent) {
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   } catch {}
 
-  // Attempt native OS drag if available
   invoke('start_drag').catch(() => {});
 }
 
@@ -98,53 +113,50 @@ function onPointerUp(e: PointerEvent) {
   }
 }
 
-const activePlan = computed<PlanItem | null>(() => {
-  if (!planData.value?.items || planData.value.items.length === 0) return null;
-  const anySub = planData.value.items.find(i => i.subscribed);
-  return anySub || planData.value.items[0];
-});
-
-const editionTag = computed(() => {
-  if (!activePlan.value) return '套餐';
-  const ed = (activePlan.value.edition || '').toLowerCase();
-  const prod = (activePlan.value.product || '').toLowerCase();
-  if (ed === 'pro' || prod.includes('pro')) return 'Pro';
-  if (ed === 'team' || prod.includes('team')) return 'Team';
-  if (ed === 'lite' || prod.includes('lite')) return 'Lite';
-  if (ed === 'enterprise' || prod.includes('enterprise')) return '企业';
-  if (activePlan.value.edition) {
-    return activePlan.value.edition.toUpperCase();
+const currentPercent = computed(() => {
+  if (usageData.value?.primary_session_percent != null) {
+    return Math.round(usageData.value.primary_session_percent);
   }
-  return 'VIP';
+  return null;
 });
 
-const sessionPeriod = computed<Period | undefined>(() => {
-  return activePlan.value?.periods?.find(p => p.label.toLowerCase() === 'session');
+const barColor = computed(() => {
+  const p = currentPercent.value ?? 0;
+  if (p >= 90) return 'from-rose-500 to-red-600';
+  if (p >= 75) return 'from-amber-500 to-orange-500';
+  return 'from-indigo-500 to-violet-500';
 });
 
-const weeklyPeriod = computed<Period | undefined>(() => {
-  return activePlan.value?.periods?.find(p => p.label.toLowerCase() === 'weekly');
+const textColor = computed(() => {
+  const p = currentPercent.value ?? 0;
+  if (p >= 90) return 'text-rose-400';
+  if (p >= 75) return 'text-amber-400';
+  return 'text-white';
 });
 
-const monthlyPeriod = computed<Period | undefined>(() => {
-  return activePlan.value?.periods?.find(p => p.label.toLowerCase() === 'monthly');
-});
-
-function getBarColor(percent: number): string {
-  if (percent >= 90) return 'from-rose-500 to-red-500';
-  if (percent >= 75) return 'from-amber-500 to-orange-500';
-  return 'from-indigo-500 to-blue-500';
-}
-
-function getTextColor(percent: number): string {
-  if (percent >= 90) return 'text-rose-400 font-bold';
-  if (percent >= 75) return 'text-amber-400 font-bold';
-  return 'text-slate-200';
+function formatMiniReset(dateStr?: string): string {
+  if (!dateStr) return '';
+  try {
+    const target = new Date(dateStr).getTime();
+    if (isNaN(target)) return dateStr;
+    const diff = target - Date.now();
+    if (diff <= 0) return '即重置';
+    const hours = Math.floor(diff / (1000 * 60 * 60));
+    const mins = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+    if (hours > 24) {
+      const days = Math.floor(hours / 24);
+      return `${days}d后`;
+    }
+    if (hours > 0) return `${hours}h${mins}m`;
+    return `${mins}m`;
+  } catch {
+    return '';
+  }
 }
 
 onMounted(() => {
-  fetchPlan();
-  timer = setInterval(fetchPlan, 15 * 60 * 1000);
+  fetchUsage();
+  timer = setInterval(fetchUsage, 10 * 60 * 1000);
 });
 
 onUnmounted(() => {
@@ -158,78 +170,64 @@ onUnmounted(() => {
     @pointermove="onPointerMove"
     @pointerup="onPointerUp"
     @pointercancel="onPointerUp"
-    class="w-[240px] h-[136px] bg-[#0e131f] border border-slate-700/60 rounded-2xl p-2.5 flex flex-col justify-between select-none shadow-2xl overflow-hidden font-sans cursor-grab active:cursor-grabbing">
-    <!-- Header -->
-    <div class="flex items-center justify-between pb-1 border-b border-slate-800/60">
-      <div class="flex items-center space-x-1.5 pointer-events-none">
-        <GripHorizontal class="w-3.5 h-3.5 text-slate-500" />
-        <span class="text-[11px] font-bold text-white tracking-wide">ArkBar</span>
-        <span class="text-[9px] bg-indigo-500/20 text-indigo-300 px-1 py-0.2 rounded font-mono">
-          {{ editionTag }}
-        </span>
-      </div>
+    class="w-full h-full select-none flex items-center justify-between px-2.5 py-1 bg-[#0b0f19]/95 text-slate-200 border border-slate-700/60 rounded-xl shadow-2xl backdrop-blur-md cursor-grab active:cursor-grabbing group hover:border-indigo-500/40 transition-colors"
+  >
+    <!-- Left: Provider Switcher Pill -->
+    <div
+      @click.stop="cycleProvider"
+      class="flex items-center space-x-1.5 cursor-pointer hover:opacity-80 transition py-0.5 px-1 rounded-lg hover:bg-slate-800/60"
+      title="点击切换监控服务商"
+    >
+      <span class="text-sm select-none">{{ usageData?.icon || '🌋' }}</span>
+      <span class="text-[10px] font-bold text-slate-300 font-mono">
+        {{ usageData?.provider_name?.split(' ')[0] || 'Ark' }}
+      </span>
+    </div>
 
-      <div class="flex items-center space-x-0.5">
-        <button @click.stop="fetchPlan" :disabled="isRefreshing"
-          class="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer" title="刷新">
-          <RefreshCw class="w-3 h-3" :class="{ 'animate-spin': isRefreshing }" />
-        </button>
-        <button @click.stop="closeWidget"
-          class="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-slate-800 transition cursor-pointer" title="关闭悬浮框">
-          <X class="w-3 h-3" />
-        </button>
+    <!-- Center: Progress & Usage -->
+    <div class="flex-1 mx-2 flex flex-col justify-center space-y-0.5">
+      <div class="flex items-center justify-between text-[9px] font-mono leading-none">
+        <span class="text-slate-400 font-sans">
+          {{ currentProvider === 'grok' ? '周期用量' : '5h用量' }}
+        </span>
+        <div class="flex items-center gap-1">
+          <span v-if="usageData?.primary_reset_at" class="text-slate-500 text-[8px]">
+            {{ formatMiniReset(usageData.primary_reset_at) }}
+          </span>
+          <span v-if="currentPercent !== null" class="font-bold" :class="textColor">
+            {{ currentPercent }}%
+          </span>
+          <span v-else class="text-slate-500">
+            {{ usageData?.is_connected ? '0%' : '未连接' }}
+          </span>
+        </div>
+      </div>
+      <div class="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden p-0.5">
+        <div
+          class="h-full rounded-full bg-gradient-to-r transition-all duration-300"
+          :class="barColor"
+          :style="{ width: `${currentPercent ?? (usageData?.is_connected ? 0 : 10)}%` }"
+        ></div>
       </div>
     </div>
 
-    <!-- 3 Mini Rows -->
-    <div class="flex-1 flex flex-col justify-around py-1 pointer-events-none">
-      <!-- Row 1: 5小时 -->
-      <div class="space-y-0.5">
-        <div class="flex items-center justify-between text-[10px]">
-          <span class="text-slate-400">5小时</span>
-          <span class="font-mono text-[11px]" :class="getTextColor(sessionPeriod?.percent || 0)">
-            {{ sessionPeriod ? sessionPeriod.percent.toFixed(1) : '-' }}%
-          </span>
-        </div>
-        <div class="h-1.5 w-full bg-slate-800/80 rounded-full overflow-hidden">
-          <div class="h-full rounded-full bg-gradient-to-r transition-all duration-300"
-            :class="getBarColor(sessionPeriod?.percent || 0)"
-            :style="{ width: `${Math.min(100, Math.max(0, sessionPeriod?.percent || 0))}%` }">
-          </div>
-        </div>
-      </div>
-
-      <!-- Row 2: 周用量 -->
-      <div class="space-y-0.5">
-        <div class="flex items-center justify-between text-[10px]">
-          <span class="text-slate-400">本周</span>
-          <span class="font-mono text-[11px]" :class="getTextColor(weeklyPeriod?.percent || 0)">
-            {{ weeklyPeriod ? weeklyPeriod.percent.toFixed(1) : '-' }}%
-          </span>
-        </div>
-        <div class="h-1.5 w-full bg-slate-800/80 rounded-full overflow-hidden">
-          <div class="h-full rounded-full bg-gradient-to-r transition-all duration-300"
-            :class="getBarColor(weeklyPeriod?.percent || 0)"
-            :style="{ width: `${Math.min(100, Math.max(0, weeklyPeriod?.percent || 0))}%` }">
-          </div>
-        </div>
-      </div>
-
-      <!-- Row 3: 月用量 -->
-      <div class="space-y-0.5">
-        <div class="flex items-center justify-between text-[10px]">
-          <span class="text-slate-400">本月</span>
-          <span class="font-mono text-[11px]" :class="getTextColor(monthlyPeriod?.percent || 0)">
-            {{ monthlyPeriod ? monthlyPeriod.percent.toFixed(1) : '-' }}%
-          </span>
-        </div>
-        <div class="h-1.5 w-full bg-slate-800/80 rounded-full overflow-hidden">
-          <div class="h-full rounded-full bg-gradient-to-r transition-all duration-300"
-            :class="getBarColor(monthlyPeriod?.percent || 0)"
-            :style="{ width: `${Math.min(100, Math.max(0, monthlyPeriod?.percent || 0))}%` }">
-          </div>
-        </div>
-      </div>
+    <!-- Right: Mini Actions -->
+    <div class="flex items-center space-x-0.5 shrink-0">
+      <button
+        @click.stop="fetchUsage"
+        :disabled="isRefreshing"
+        class="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition"
+        title="刷新"
+      >
+        <RefreshCw class="w-2.5 h-2.5" :class="{ 'animate-spin': isRefreshing }" />
+      </button>
+      <button
+        @click.stop="closeWidget"
+        class="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-slate-800 transition"
+        title="关闭悬浮窗"
+      >
+        <X class="w-2.5 h-2.5" />
+      </button>
     </div>
   </div>
 </template>

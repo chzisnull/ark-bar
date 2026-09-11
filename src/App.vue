@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import type { EnvironmentStatus, UsagePlanResponse, UpdateInfo } from './types';
+import type { EnvironmentStatus, UpdateInfo, ProviderType, ProviderUsageData } from './types';
 import OnboardingWizard from './components/OnboardingWizard.vue';
 import UsagePanel from './components/UsagePanel.vue';
 import SettingsModal from './components/SettingsModal.vue';
@@ -11,57 +11,97 @@ import { Loader2 } from 'lucide-vue-next';
 const isFloatWindow = ref(window.location.hash === '#float');
 const currentView = ref<'loading' | 'onboarding' | 'panel' | 'settings'>('loading');
 const envStatus = ref<EnvironmentStatus | null>(null);
-const planData = ref<UsagePlanResponse | null>(null);
 const updateInfo = ref<UpdateInfo | null>(null);
 const isRefreshing = ref(false);
-const refreshInterval = ref(15); // in minutes
-const showPercentageInTray = ref(true);
+
+const activeProvider = ref<ProviderType>(
+  (localStorage.getItem('arkbar_active_provider') as ProviderType) || 'volcengine'
+);
+
+const trayTarget = ref<ProviderType | 'auto'>(
+  (localStorage.getItem('arkbar_tray_target') as ProviderType | 'auto') || 'auto'
+);
+
+const showPercentageInTray = ref<boolean>(
+  localStorage.getItem('arkbar_tray_percent') !== 'false'
+);
+
+const refreshInterval = ref<number>(
+  Number(localStorage.getItem('arkbar_refresh_interval')) || 15
+);
+
+const providersData = ref<Record<ProviderType, ProviderUsageData | null>>({
+  volcengine: null,
+  antigravity: null,
+  grok: null,
+  codex: null,
+});
 
 let timer: any = null;
 
 async function checkEnv() {
-  currentView.value = 'loading';
   try {
     const status = await invoke<EnvironmentStatus>('check_environment');
     envStatus.value = status;
-
-    if (!status.has_node || !status.has_arkcli || !status.logged_in) {
-      currentView.value = 'onboarding';
-      await invoke('update_tray_title', { title: 'ArkBar ⚠️' });
-    } else {
-      await fetchUsagePlan();
-      currentView.value = 'panel';
-    }
   } catch (err) {
-    console.error('Environment check failed:', err);
-    currentView.value = 'onboarding';
+    console.debug('Environment check failed:', err);
   }
 }
 
-async function fetchUsagePlan() {
+async function fetchAllUsage() {
   isRefreshing.value = true;
   try {
-    const data = await invoke<UsagePlanResponse>('get_usage_plan');
-    planData.value = data;
-    updateTrayTitleFromData(data);
+    const list = await invoke<ProviderUsageData[]>('get_all_providers_usage');
+    for (const item of list) {
+      if (item.provider in providersData.value) {
+        providersData.value[item.provider as ProviderType] = item;
+      }
+    }
+    updateTrayTitle();
   } catch (err) {
-    console.error('Failed to fetch usage plan:', err);
+    console.error('Failed to fetch all providers usage:', err);
   } finally {
     isRefreshing.value = false;
   }
 }
 
-function updateTrayTitleFromData(data: UsagePlanResponse) {
+async function fetchActiveProviderUsage() {
+  isRefreshing.value = true;
+  try {
+    const data = await invoke<ProviderUsageData>('get_unified_usage', {
+      provider: activeProvider.value,
+      customToken: null,
+    });
+    providersData.value[activeProvider.value] = data;
+    updateTrayTitle();
+  } catch (err) {
+    console.error(`Failed to fetch ${activeProvider.value} usage:`, err);
+  } finally {
+    isRefreshing.value = false;
+  }
+}
+
+function handleSwitchProvider(provider: ProviderType) {
+  activeProvider.value = provider;
+  localStorage.setItem('arkbar_active_provider', provider);
+  updateTrayTitle();
+  // If no data cached yet, fetch it
+  if (!providersData.value[provider]) {
+    fetchActiveProviderUsage();
+  }
+}
+
+function updateTrayTitle() {
   if (!showPercentageInTray.value) {
     invoke('update_tray_title', { title: '' });
     return;
   }
 
-  // Find 5-hour session percentage (近5小时用量)
-  const item = data.items?.find(i => i.subscribed) || data.items?.[0];
-  const session = item?.periods?.find(p => p.label.toLowerCase() === 'session');
-  if (session && typeof session.percent === 'number') {
-    const p = Math.round(session.percent);
+  const target = trayTarget.value === 'auto' ? activeProvider.value : trayTarget.value;
+  const data = providersData.value[target];
+
+  if (data?.primary_session_percent != null && data.is_connected) {
+    const p = Math.round(data.primary_session_percent);
     invoke('update_tray_title', { title: ` ${p}%` });
   } else {
     invoke('update_tray_title', { title: '' });
@@ -73,20 +113,25 @@ function setupTimer() {
   if (refreshInterval.value > 0) {
     timer = setInterval(() => {
       if (currentView.value === 'panel') {
-        fetchUsagePlan();
+        fetchAllUsage();
       }
     }, refreshInterval.value * 60 * 1000);
   }
 }
 
-watch(refreshInterval, () => {
+watch(refreshInterval, (val) => {
+  localStorage.setItem('arkbar_refresh_interval', String(val));
   setupTimer();
 });
 
-watch(showPercentageInTray, () => {
-  if (planData.value) {
-    updateTrayTitleFromData(planData.value);
-  }
+watch(showPercentageInTray, (val) => {
+  localStorage.setItem('arkbar_tray_percent', String(val));
+  updateTrayTitle();
+});
+
+watch(trayTarget, (val) => {
+  localStorage.setItem('arkbar_tray_target', val);
+  updateTrayTitle();
 });
 
 async function checkAutoUpdate() {
@@ -99,9 +144,10 @@ async function checkAutoUpdate() {
 }
 
 onMounted(async () => {
-  await checkEnv();
+  currentView.value = 'loading';
+  await Promise.allSettled([checkEnv(), fetchAllUsage()]);
+  currentView.value = 'panel';
   setupTimer();
-  // Silently check for updates on startup
   checkAutoUpdate();
 });
 
@@ -119,24 +165,26 @@ onUnmounted(() => {
     <!-- 1. Loading View -->
     <div v-if="currentView === 'loading'" class="flex-1 flex flex-col items-center justify-center space-y-3">
       <Loader2 class="w-8 h-8 text-indigo-500 animate-spin" />
-      <span class="text-xs text-slate-400 font-medium">正在检测环境与配额...</span>
+      <span class="text-xs text-slate-400 font-medium">正在检测各大平台配额...</span>
     </div>
 
-    <!-- 2. Onboarding Wizard -->
+    <!-- 2. Onboarding Wizard (Only when user explicitly asks or Volcano setup needed) -->
     <OnboardingWizard
       v-else-if="currentView === 'onboarding'"
       :status="envStatus!"
-      @refresh="checkEnv"
-      @complete="checkEnv"
+      @refresh="fetchAllUsage"
+      @complete="() => { checkEnv(); fetchAllUsage(); currentView = 'panel'; }"
     />
 
     <!-- 3. Quota Usage Panel -->
     <UsagePanel
       v-else-if="currentView === 'panel'"
-      :plan-data="planData"
+      :providers-data="providersData"
+      :active-provider="activeProvider"
       :is-refreshing="isRefreshing"
       :update-info="updateInfo"
-      @refresh="fetchUsagePlan"
+      @switch-provider="handleSwitchProvider"
+      @refresh="fetchAllUsage"
       @open-settings="currentView = 'settings'"
     />
 
@@ -147,10 +195,13 @@ onUnmounted(() => {
       :refresh-interval="refreshInterval"
       :show-percentage-in-tray="showPercentageInTray"
       :initial-update-info="updateInfo"
-      @close="currentView = 'panel'"
+      :active-provider="activeProvider"
       @update-interval="refreshInterval = $event"
       @update-tray-mode="showPercentageInTray = $event"
+      @update-tray-target="trayTarget = $event"
       @re-login="currentView = 'onboarding'"
+      @provider-token-updated="fetchAllUsage"
+      @close="currentView = 'panel'"
     />
   </main>
 </template>
