@@ -28,11 +28,11 @@ const updateResult = ref<UpdateInfo | null>(props.initialUpdateInfo || null);
 const updateError = ref('');
 const isFloatOpen = ref(false);
 const showUpdateModal = ref(false);
-const appVersion = computed(() => updateResult.value?.current_version || props.initialUpdateInfo?.current_version || '0.2.4');
+const appVersion = computed(() => updateResult.value?.current_version || props.initialUpdateInfo?.current_version || '0.2.5');
 
 // Tray Target Provider selection
 const trayTarget = ref<ProviderType | 'auto'>(
-  (localStorage.getItem('arkbar_tray_target') as ProviderType | 'auto') || 'auto'
+  (localStorage.getItem('arkbar_tray_target') as ProviderType | 'auto') || 'volcengine'
 );
 
 // Desktop Floating Widget Primary Provider
@@ -234,11 +234,11 @@ onMounted(async () => {
               @change="handleTrayTargetChange"
               class="bg-slate-800 text-slate-200 border border-slate-700 rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-indigo-500 cursor-pointer"
             >
-              <option value="auto">🔄 跟随当前查看切换</option>
-              <option value="volcengine">🌋 火山方舟 (5小时)</option>
-              <option value="antigravity">🌐 Antigravity (5小时)</option>
+              <option value="volcengine">🌋 火山方舟 5小时用量 (推荐默认)</option>
+              <option value="antigravity">🌐 Antigravity 5小时用量</option>
               <option value="grok">⚡ xAI Grok (周度配额)</option>
-              <option value="codex">🤖 OpenAI Codex (5小时)</option>
+              <option value="codex">🤖 OpenAI Codex 5小时用量</option>
+              <option value="auto">🔄 跟随当前查看切换</option>
             </select>
           </div>
 

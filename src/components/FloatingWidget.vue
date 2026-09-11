@@ -106,11 +106,33 @@ function getTextColor(percent: number | null): string {
   return 'text-white';
 }
 
+function parseResetTime(dateStr?: string): number | null {
+  if (!dateStr) return null;
+  const trimmed = dateStr.trim();
+  if (/^\d+$/.test(trimmed)) {
+    const num = parseInt(trimmed, 10);
+    return num < 1e11 ? num * 1000 : num;
+  }
+  const t = new Date(trimmed).getTime();
+  return isNaN(t) ? null : t;
+}
+
+function formatExactTime(dateStr?: string): string {
+  const target = parseResetTime(dateStr);
+  if (!target) return dateStr || '';
+  const d = new Date(target);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const date = String(d.getDate()).padStart(2, '0');
+  const hours = String(d.getHours()).padStart(2, '0');
+  const mins = String(d.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${date} ${hours}:${mins}`;
+}
+
 function formatMiniReset(dateStr?: string): string {
-  if (!dateStr) return '';
+  const target = parseResetTime(dateStr);
+  if (!target) return '';
   try {
-    const target = new Date(dateStr).getTime();
-    if (isNaN(target)) return dateStr;
     const diff = target - Date.now();
     if (diff <= 0) return '即重置';
     const hours = Math.floor(diff / (1000 * 60 * 60));
@@ -197,9 +219,10 @@ function handleMouseEnter() {
 
 function handleMouseLeave() {
   if (hoverTimer) clearTimeout(hoverTimer);
-  if (!isHovered.value) return;
+  if (isDragging || !isHovered.value) return;
 
   hoverTimer = setTimeout(async () => {
+    if (isDragging) return;
     isHovered.value = false;
     try {
       await invoke('set_float_window_size', { width: 260.0, height: 44.0 });
@@ -209,28 +232,29 @@ function handleMouseLeave() {
 
 // Drag logic
 let isDragging = false;
+let hasMoved = false;
 let startScreenX = 0;
 let startScreenY = 0;
 let pendingTotalDx = 0;
 let pendingTotalDy = 0;
 let rafId: number | null = null;
+let dragTarget: HTMLElement | null = null;
 
 function onPointerDown(e: PointerEvent) {
   if (e.button !== 0) return;
   const target = e.target as HTMLElement;
-  if (target.closest('button') || target.closest('a') || target.closest('[data-no-drag]')) return;
+  // Ignore interactive buttons (refresh, close, quick menu buttons)
+  if (target.closest('button') || target.closest('a')) return;
 
-  // Collapse if expanded during drag to maintain smooth pill movement
-  if (isHovered.value) {
-    isHovered.value = false;
-    invoke('set_float_window_size', { width: 260.0, height: 44.0 }).catch(() => {});
-  }
-
+  dragTarget = target;
   isDragging = true;
+  hasMoved = false;
   startScreenX = e.screenX;
   startScreenY = e.screenY;
   pendingTotalDx = 0;
   pendingTotalDy = 0;
+
+  if (hoverTimer) clearTimeout(hoverTimer);
 
   try {
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
@@ -246,6 +270,12 @@ function onPointerMove(e: PointerEvent) {
 
   pendingTotalDx = e.screenX - startScreenX;
   pendingTotalDy = e.screenY - startScreenY;
+
+  if (Math.abs(pendingTotalDx) > 3 || Math.abs(pendingTotalDy) > 3) {
+    hasMoved = true;
+  }
+
+  if (!hasMoved) return;
 
   if (!rafId) {
     rafId = requestAnimationFrame(async () => {
@@ -272,12 +302,28 @@ async function onPointerUp(e: PointerEvent) {
     try {
       (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
     } catch {}
-    try {
-      await invoke('update_drag_move', { totalDx: finalDx, totalDy: finalDy });
-    } catch {}
-    try {
-      await invoke('end_drag_move');
-    } catch {}
+
+    if (hasMoved) {
+      try {
+        await invoke('update_drag_move', { totalDx: finalDx, totalDy: finalDy });
+      } catch {}
+      try {
+        await invoke('end_drag_move');
+      } catch {}
+    } else {
+      try {
+        await invoke('end_drag_move');
+      } catch {}
+      // Click without drag
+      if (dragTarget?.closest('[data-action="cycle"]')) {
+        cycleProvider();
+      }
+      const row = dragTarget?.closest('[data-provider-id]') as HTMLElement | null;
+      if (row?.dataset.providerId) {
+        setPrimary(row.dataset.providerId as ProviderType);
+      }
+    }
+    dragTarget = null;
   }
 }
 
@@ -401,7 +447,6 @@ onUnmounted(() => {
     <div
       v-else-if="isHovered && authorizedProviders.length > 1"
       class="w-full h-full p-2 flex flex-col justify-between"
-      data-no-drag
     >
       <div class="flex items-center justify-between pb-1 border-b border-slate-800/80 mb-1 px-1">
         <div class="flex items-center gap-1 text-[10px] text-slate-400 font-semibold">
@@ -432,19 +477,19 @@ onUnmounted(() => {
         <div
           v-for="item in authorizedProviders"
           :key="item.id"
-          @click.stop="setPrimary(item.id)"
+          :data-provider-id="item.id"
           class="flex items-center justify-between px-1.5 py-1 rounded-lg hover:bg-slate-800/60 transition cursor-pointer"
           :class="item.id === primaryProvider ? 'bg-indigo-950/40 border border-indigo-500/30' : 'border border-transparent'"
-          :title="`点击将 ${item.name} 设为首选常驻`"
+          :title="`点击将 ${item.name} 设为首选常驻 (按住可自由拖拽)`"
         >
           <!-- Left: Provider Icon & Name -->
-          <div class="flex items-center gap-1.5 min-w-[72px]">
+          <div class="flex items-center gap-1.5 min-w-[72px] pointer-events-none">
             <span class="text-xs">{{ item.icon }}</span>
             <span class="text-[10px] font-medium text-slate-200 truncate">{{ item.name }}</span>
           </div>
 
           <!-- Center: Progress Mini Bar -->
-          <div class="flex-1 mx-2 flex items-center gap-1.5">
+          <div class="flex-1 mx-2 flex items-center gap-1.5 pointer-events-none">
             <div class="flex-1 bg-slate-800 h-1.5 rounded-full overflow-hidden">
               <div
                 class="h-full rounded-full bg-gradient-to-r transition-all duration-300"
@@ -461,9 +506,21 @@ onUnmounted(() => {
           </div>
 
           <!-- Right: Reset Time or Star Badge -->
-          <div class="text-[9px] font-mono text-slate-500 min-w-[38px] text-right">
-            <span v-if="item.id === primaryProvider" class="text-indigo-400 font-bold">首选</span>
-            <span v-else>{{ formatMiniReset(item.data.primary_reset_at) }}</span>
+          <div class="text-[9px] font-mono min-w-[38px] text-right pointer-events-none">
+            <span
+              v-if="item.id === primaryProvider"
+              class="text-indigo-400 font-bold"
+              :title="item.data.primary_reset_at ? `刷新时间: ${formatExactTime(item.data.primary_reset_at)}` : '当前首选常驻'"
+            >
+              {{ formatMiniReset(item.data.primary_reset_at) || '首选' }}
+            </span>
+            <span
+              v-else
+              class="text-slate-400"
+              :title="item.data.primary_reset_at ? `刷新时间: ${formatExactTime(item.data.primary_reset_at)}` : ''"
+            >
+              {{ formatMiniReset(item.data.primary_reset_at) }}
+            </span>
           </div>
         </div>
       </div>
@@ -476,13 +533,12 @@ onUnmounted(() => {
     >
       <!-- Left: Provider Pill (Click to cycle) -->
       <div
-        data-no-drag
-        @click.stop="cycleProvider"
+        data-action="cycle"
         class="flex items-center space-x-1.5 cursor-pointer hover:opacity-80 transition py-0.5 px-1 rounded-lg hover:bg-slate-800/60"
         title="点击切换展示厂商 (悬停展开所有已授权厂商，右键呼出菜单)"
       >
-        <span class="text-sm select-none">{{ currentUsage?.icon || allProvidersList.find(p => p.id === primaryProvider)?.icon || '🌋' }}</span>
-        <span class="text-[10px] font-bold text-slate-300 font-mono">
+        <span class="text-sm select-none pointer-events-none">{{ currentUsage?.icon || allProvidersList.find(p => p.id === primaryProvider)?.icon || '🌋' }}</span>
+        <span class="text-[10px] font-bold text-slate-300 font-mono pointer-events-none">
           {{ currentUsage?.provider_name?.split(' ')[0] || allProvidersList.find(p => p.id === primaryProvider)?.name || 'Ark' }}
         </span>
       </div>
@@ -494,7 +550,11 @@ onUnmounted(() => {
             {{ primaryProvider === 'grok' ? '周期用量' : '5h用量' }}
           </span>
           <div class="flex items-center gap-1">
-            <span v-if="currentUsage?.primary_reset_at" class="text-slate-500 text-[8px]">
+            <span
+              v-if="currentUsage?.primary_reset_at"
+              class="text-slate-400 text-[8px]"
+              :title="`刷新时间: ${formatExactTime(currentUsage.primary_reset_at)}`"
+            >
               {{ formatMiniReset(currentUsage.primary_reset_at) }}
             </span>
             <span v-if="currentPercent !== null" class="font-bold" :class="getTextColor(currentPercent)">
@@ -515,9 +575,8 @@ onUnmounted(() => {
       </div>
 
       <!-- Right: Mini Actions -->
-      <div data-no-drag class="flex items-center space-x-0.5 shrink-0">
+      <div class="flex items-center space-x-0.5 shrink-0">
         <button
-          data-no-drag
           @click.stop="fetchUsage"
           :disabled="isRefreshing"
           class="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
@@ -526,7 +585,6 @@ onUnmounted(() => {
           <RefreshCw class="w-2.5 h-2.5" :class="{ 'animate-spin': isRefreshing }" />
         </button>
         <button
-          data-no-drag
           @click.stop="closeWidget"
           class="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-slate-800 transition cursor-pointer"
           title="关闭悬浮窗"

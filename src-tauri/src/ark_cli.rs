@@ -1,9 +1,13 @@
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use crate::env_resolver::execute_cmd;
 use crate::provider_models::{
     ProviderAccountInfo, ProviderPlanGroup, ProviderQuotaPeriod, ProviderUsageData,
 };
+
+static VOLC_CACHE: Mutex<Option<(Instant, ProviderUsageData)>> = Mutex::new(None);
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct EnvironmentStatus {
@@ -254,13 +258,131 @@ pub fn get_usage_plan() -> Result<Value, String> {
     }
 }
 
+fn days_to_ymd(days: i64) -> (i64, i64, i64) {
+    let z = days + 719468;
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = (yoe as i64) + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = y + if m <= 2 { 1 } else { 0 };
+    (y, m as i64, d as i64)
+}
+
+pub fn unix_to_iso8601(ts_sec: i64) -> String {
+    let days = ts_sec / 86400;
+    let rem_sec = ts_sec % 86400;
+    let (year, month, day) = days_to_ymd(days);
+    let hour = rem_sec / 3600;
+    let minute = (rem_sec % 3600) / 60;
+    let second = rem_sec % 60;
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", year, month, day, hour, minute, second)
+}
+
+#[derive(Debug, Default, Clone)]
+#[allow(dead_code)]
+pub struct VolcSeatMilestones {
+    pub seat_id: Option<String>,
+    pub short_term_reset: Option<String>,
+    pub weekly_reset: Option<String>,
+    pub monthly_reset: Option<String>,
+    pub short_term_usage: Option<f64>,
+    pub weekly_usage: Option<f64>,
+    pub monthly_usage: Option<f64>,
+}
+
+pub fn query_volc_seat_usage(known_seat_id: Option<&str>) -> Option<VolcSeatMilestones> {
+    // 1. Identify SeatID: use known_seat_id or query usage.get_seat_info
+    let seat_id = if let Some(sid) = known_seat_id.filter(|s| !s.trim().is_empty()) {
+        sid.to_string()
+    } else {
+        match execute_cmd("arkcli", &["api", "usage.get_seat_info", "--params", "{\"ProjectName\":\"default\"}", "--format", "json"]) {
+            Ok(output) if output.status.success() => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                serde_json::from_str::<Value>(&stdout)
+                    .ok()
+                    .and_then(|v| v.get("Result").and_then(|r| r.get("SeatID")).and_then(|s| s.as_str()).map(|s| s.to_string()))
+                    .unwrap_or_default()
+            }
+            _ => String::new(),
+        }
+    };
+
+    // 2. Query usage.get_seat_info_usage with SeatID and ProjectName
+    let params = if !seat_id.is_empty() {
+        format!("{{\"SeatID\":\"{}\",\"ProjectName\":\"default\"}}", seat_id)
+    } else {
+        "{\"ProjectName\":\"default\"}".to_string()
+    };
+
+    let output = execute_cmd("arkcli", &["api", "usage.get_seat_info_usage", "--params", &params, "--format", "json"]).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json_val = serde_json::from_str::<Value>(&stdout).ok()?;
+    let result = json_val.get("Result")?;
+
+    let short_term_reset = result.get("ShortTermResetMilestone")
+        .and_then(|v| v.as_i64())
+        .filter(|&ts| ts > 0)
+        .map(unix_to_iso8601);
+
+    let weekly_reset = result.get("WeeklyResetMilestone")
+        .and_then(|v| v.as_i64())
+        .filter(|&ts| ts > 0)
+        .map(unix_to_iso8601);
+
+    let monthly_reset = result.get("MonthlyResetMilestone")
+        .and_then(|v| v.as_i64())
+        .filter(|&ts| ts > 0)
+        .map(unix_to_iso8601);
+
+    let short_term_usage = result.get("ShortTermUsage").and_then(|v| v.as_f64());
+    let weekly_usage = result.get("WeeklyUsage").and_then(|v| v.as_f64());
+    let monthly_usage = result.get("MonthlyUsage").and_then(|v| v.as_f64());
+
+    Some(VolcSeatMilestones {
+        seat_id: if !seat_id.is_empty() { Some(seat_id) } else { None },
+        short_term_reset,
+        weekly_reset,
+        monthly_reset,
+        short_term_usage,
+        weekly_usage,
+        monthly_usage,
+    })
+}
+
 pub fn get_volcengine_usage() -> ProviderUsageData {
-    // Fast path: query usage plan directly (~200ms, avoids spawning node/npm/arkcli check subprocesses)
+    // 0. Return memory cached data if within 60s TTL for instant rendering
+    if let Ok(guard) = VOLC_CACHE.lock() {
+        if let Some((cached_at, ref data)) = *guard {
+            if cached_at.elapsed() < Duration::from_secs(60) {
+                return data.clone();
+            }
+        }
+    }
+
+    // 1. Query usage plan
     match get_usage_plan() {
         Ok(json_val) => {
             let mut groups = Vec::new();
             let mut primary_session_percent = None;
             let mut primary_reset_at = None;
+
+            // Extract seat_id from first item if available
+            let known_seat = json_val.get("items")
+                .and_then(|i| i.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|item| item.get("seat_id"))
+                .and_then(|s| s.as_str());
+
+            // Query high-precision seat milestones (5h, weekly, monthly reset timestamps)
+            let seat_milestones = query_volc_seat_usage(known_seat);
 
             if let Some(items) = json_val.get("items").and_then(|i| i.as_array()) {
                 for item in items {
@@ -271,15 +393,45 @@ pub fn get_volcengine_usage() -> ProviderUsageData {
                     if let Some(pers) = item.get("periods").and_then(|p| p.as_array()) {
                         for p in pers {
                             let label = p.get("label").and_then(|l| l.as_str()).unwrap_or("").to_lowercase();
-                            let percent = p.get("percent").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                            let reset_at = p.get("reset_at").and_then(|r| r.as_str()).map(|s| s.to_string());
+                            let mut percent = p.get("percent").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                            let mut reset_at = p.get("reset_at").and_then(|r| r.as_str()).map(|s| s.to_string());
                             let used = p.get("used").and_then(|u| u.as_f64());
                             let total = p.get("total").and_then(|t| t.as_f64());
 
                             let name = match label.as_str() {
-                                "session" => "近5小时用量".to_string(),
-                                "weekly" => "近一周用量".to_string(),
-                                "monthly" => "近一月用量".to_string(),
+                                "session" => {
+                                    if let Some(ref m) = seat_milestones {
+                                        if let Some(rt) = &m.short_term_reset {
+                                            reset_at = Some(rt.clone());
+                                        }
+                                        if let Some(u) = m.short_term_usage {
+                                            percent = u;
+                                        }
+                                    }
+                                    "近5小时用量".to_string()
+                                }
+                                "weekly" => {
+                                    if let Some(ref m) = seat_milestones {
+                                        if let Some(rt) = &m.weekly_reset {
+                                            reset_at = Some(rt.clone());
+                                        }
+                                        if let Some(u) = m.weekly_usage {
+                                            percent = u;
+                                        }
+                                    }
+                                    "近一周用量".to_string()
+                                }
+                                "monthly" => {
+                                    if let Some(ref m) = seat_milestones {
+                                        if reset_at.is_none() {
+                                            reset_at = m.monthly_reset.clone();
+                                        }
+                                        if let Some(u) = m.monthly_usage {
+                                            percent = u;
+                                        }
+                                    }
+                                    "近一月用量".to_string()
+                                }
                                 other => other.to_string(),
                             };
 
@@ -313,7 +465,7 @@ pub fn get_volcengine_usage() -> ProviderUsageData {
             let user_name = viewer.and_then(|v| v.get("user_name")).and_then(|u| u.as_str()).map(|s| s.to_string());
             let account_id = viewer.and_then(|v| v.get("account_id")).and_then(|a| a.as_str()).map(|s| s.to_string());
 
-            ProviderUsageData {
+            let result = ProviderUsageData {
                 provider: "volcengine".to_string(),
                 provider_name: "火山方舟".to_string(),
                 icon: "🌋".to_string(),
@@ -330,9 +482,85 @@ pub fn get_volcengine_usage() -> ProviderUsageData {
                 primary_session_percent,
                 primary_reset_at,
                 console_url: Some("https://console.volcengine.com/ark/region:cn-beijing/subscription/coding-plan-enterprise".to_string()),
+            };
+
+            if let Ok(mut guard) = VOLC_CACHE.lock() {
+                *guard = Some((Instant::now(), result.clone()));
             }
+
+            result
         }
         Err(e) => {
+            // Fallback via get_seat_info_usage directly if usage plan fails
+            if let Some(milestones) = query_volc_seat_usage(None) {
+                let mut periods = Vec::new();
+                let short_used = milestones.short_term_usage.unwrap_or(0.0);
+                let week_used = milestones.weekly_usage.unwrap_or(0.0);
+                let month_used = milestones.monthly_usage.unwrap_or(0.0);
+
+                periods.push(ProviderQuotaPeriod {
+                    label: "session".to_string(),
+                    name: "近5小时用量".to_string(),
+                    used_percent: (short_used * 10.0).round() / 10.0,
+                    remaining_percent: ((100.0 - short_used).clamp(0.0, 100.0) * 10.0).round() / 10.0,
+                    reset_at: milestones.short_term_reset.clone(),
+                    used: None,
+                    total: None,
+                    description: None,
+                });
+
+                periods.push(ProviderQuotaPeriod {
+                    label: "weekly".to_string(),
+                    name: "近一周用量".to_string(),
+                    used_percent: (week_used * 10.0).round() / 10.0,
+                    remaining_percent: ((100.0 - week_used).clamp(0.0, 100.0) * 10.0).round() / 10.0,
+                    reset_at: milestones.weekly_reset.clone(),
+                    used: None,
+                    total: None,
+                    description: None,
+                });
+
+                periods.push(ProviderQuotaPeriod {
+                    label: "monthly".to_string(),
+                    name: "近一月用量".to_string(),
+                    used_percent: (month_used * 10.0).round() / 10.0,
+                    remaining_percent: ((100.0 - month_used).clamp(0.0, 100.0) * 10.0).round() / 10.0,
+                    reset_at: milestones.monthly_reset.clone(),
+                    used: None,
+                    total: None,
+                    description: None,
+                });
+
+                let result = ProviderUsageData {
+                    provider: "volcengine".to_string(),
+                    provider_name: "火山方舟".to_string(),
+                    icon: "🌋".to_string(),
+                    is_connected: true,
+                    status_message: Some("在线同步成功 (席位直连)".to_string()),
+                    error_message: None,
+                    account_info: Some(ProviderAccountInfo {
+                        user_name: None,
+                        email: None,
+                        account_id: None,
+                        plan_name: Some("Coding Plan".to_string()),
+                    }),
+                    groups: vec![ProviderPlanGroup {
+                        group_name: "Coding Plan".to_string(),
+                        edition: Some("席位配额".to_string()),
+                        periods,
+                    }],
+                    primary_session_percent: Some(short_used),
+                    primary_reset_at: milestones.short_term_reset,
+                    console_url: Some("https://console.volcengine.com/ark/region:cn-beijing/subscription/coding-plan-enterprise".to_string()),
+                };
+
+                if let Ok(mut guard) = VOLC_CACHE.lock() {
+                    *guard = Some((Instant::now(), result.clone()));
+                }
+
+                return result;
+            }
+
             // Slow diagnostic path: only check environment when usage plan fails
             let env_status = check_environment();
             let status_msg = if !env_status.has_arkcli {
@@ -518,5 +746,12 @@ mod tests {
         assert!(!is_newer_version("0.1.0", "0.1.0"));
         assert!(!is_newer_version("0.1.0", "0.1.1"));
         assert!(!is_newer_version("0.0.9", "0.1.0"));
+    }
+
+    #[test]
+    fn test_unix_to_iso8601() {
+        assert_eq!(unix_to_iso8601(1789137461), "2026-09-11T14:37:41Z");
+        assert_eq!(unix_to_iso8601(1789315200), "2026-09-13T16:00:00Z");
+        assert_eq!(unix_to_iso8601(1791302399), "2026-10-06T15:59:59Z");
     }
 }

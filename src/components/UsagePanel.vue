@@ -45,28 +45,56 @@ function getTextColor(percent: number): string {
   return 'text-white';
 }
 
+function parseResetTime(dateStr?: string): number | null {
+  if (!dateStr) return null;
+  const trimmed = dateStr.trim();
+  if (/^\d+$/.test(trimmed)) {
+    const num = parseInt(trimmed, 10);
+    return num < 1e11 ? num * 1000 : num;
+  }
+  const t = new Date(trimmed).getTime();
+  return isNaN(t) ? null : t;
+}
+
+function formatExactTime(dateStr?: string): string {
+  const target = parseResetTime(dateStr);
+  if (!target) return dateStr || '';
+  const d = new Date(target);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const date = String(d.getDate()).padStart(2, '0');
+  const hours = String(d.getHours()).padStart(2, '0');
+  const mins = String(d.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${date} ${hours}:${mins}`;
+}
+
 function formatDetailedReset(dateStr?: string): string {
-  if (!dateStr) return '';
-  try {
-    const target = new Date(dateStr).getTime();
-    if (isNaN(target)) return dateStr;
-    const now = Date.now();
-    const diff = target - now;
-    if (diff <= 0) return '即将重置';
+  const target = parseResetTime(dateStr);
+  if (!target) return dateStr || '';
+  const now = Date.now();
+  const diff = target - now;
+  if (diff <= 0) return '即将重置';
 
-    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-    const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-    const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+  const targetDate = new Date(target);
+  const nowDate = new Date(now);
+  const isSameDay =
+    targetDate.getDate() === nowDate.getDate() &&
+    targetDate.getMonth() === nowDate.getMonth() &&
+    targetDate.getFullYear() === nowDate.getFullYear();
 
-    if (days > 0) {
-      return `${days}天${hours}小时${minutes}分后重置`;
-    } else if (hours > 0) {
-      return `${hours}小时${minutes}分后重置`;
-    } else {
-      return `${minutes}分后重置`;
-    }
-  } catch {
-    return dateStr;
+  const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+  const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+  const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+
+  const timeStr = `${String(targetDate.getHours()).padStart(2, '0')}:${String(targetDate.getMinutes()).padStart(2, '0')}`;
+
+  if (days > 0) {
+    const monthDayStr = `${targetDate.getMonth() + 1}/${targetDate.getDate()}`;
+    return `${monthDayStr} ${timeStr} (${days}天${hours}h后)`;
+  } else if (isSameDay) {
+    return `今天 ${timeStr} (${hours > 0 ? `${hours}h` : ''}${minutes}m后)`;
+  } else {
+    return `${hours > 0 ? `${hours}h` : ''}${minutes}m后 (${timeStr})`;
   }
 }
 </script>
@@ -210,7 +238,8 @@ function formatDetailedReset(dateStr?: string): string {
               <div class="flex items-center gap-1.5">
                 <span
                   v-if="period.reset_at"
-                  class="text-[10px] bg-slate-800/90 text-slate-400 px-1.5 py-0.5 rounded font-medium flex items-center gap-1"
+                  class="text-[10px] bg-slate-800/90 text-slate-300 px-1.5 py-0.5 rounded font-medium flex items-center gap-1 cursor-help hover:text-white transition"
+                  :title="`额度刷新时间: ${formatExactTime(period.reset_at)}`"
                 >
                   <Clock class="w-2.5 h-2.5 text-indigo-400 shrink-0" />
                   {{ formatDetailedReset(period.reset_at) }}

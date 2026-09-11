@@ -20,7 +20,7 @@ const activeProvider = ref<ProviderType>(
 );
 
 const trayTarget = ref<ProviderType | 'auto'>(
-  (localStorage.getItem('arkbar_tray_target') as ProviderType | 'auto') || 'auto'
+  (localStorage.getItem('arkbar_tray_target') as ProviderType | 'auto') || 'volcengine'
 );
 
 const showPercentageInTray = ref<boolean>(
@@ -87,7 +87,10 @@ async function fetchProviderUsage(provider: ProviderType, silent = false) {
     });
     providersData.value[provider] = data;
     saveCachedProviders();
-    updateTrayTitle();
+    const effectiveTarget = trayTarget.value === 'auto' ? 'volcengine' : trayTarget.value;
+    if (provider === effectiveTarget || provider === 'volcengine') {
+      updateTrayTitle();
+    }
   } catch (err) {
     console.error(`Failed to fetch ${provider} usage:`, err);
   } finally {
@@ -101,7 +104,7 @@ async function fetchProviderUsage(provider: ProviderType, silent = false) {
 function handleSwitchProvider(provider: ProviderType) {
   activeProvider.value = provider;
   localStorage.setItem('arkbar_active_provider', provider);
-  updateTrayTitle();
+  // 顶部菜单栏固定展示 5 小时用量，切换主卡片 Tab 不影响菜单栏标题
   // 0ms instant switch: if data already exists in memory/cache, render immediately without blocking UI
   const hasData = !!providersData.value[provider];
   fetchProviderUsage(provider, hasData);
@@ -136,8 +139,9 @@ function updateTrayTitle() {
     return;
   }
 
-  const target = trayTarget.value === 'auto' ? activeProvider.value : trayTarget.value;
-  const data = providersData.value[target];
+  // 固定展示火山方舟 5 小时用量，不随界面 Tab 切换而变动
+  const target: ProviderType = trayTarget.value === 'auto' ? 'volcengine' : trayTarget.value;
+  const data = providersData.value[target] || providersData.value['volcengine'];
 
   if (data?.primary_session_percent != null && data.is_connected) {
     const p = Math.round(data.primary_session_percent);
