@@ -104,18 +104,34 @@ pub fn is_float_window_open(app: AppHandle) -> bool {
     }
 }
 
+static DRAG_SESSION: std::sync::Mutex<Option<(i32, i32, f64)>> = std::sync::Mutex::new(None);
+
 #[tauri::command]
-pub fn start_drag(window: tauri::WebviewWindow) -> Result<(), String> {
-    window.start_dragging().map_err(|e| e.to_string())
+pub fn start_drag_move(window: tauri::WebviewWindow) -> Result<(), String> {
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let pos = window.outer_position().map_err(|e| e.to_string())?;
+    let mut session = DRAG_SESSION.lock().map_err(|e| e.to_string())?;
+    *session = Some((pos.x, pos.y, scale));
+    Ok(())
 }
 
 #[tauri::command]
-pub fn drag_move_window(window: tauri::WebviewWindow, dx: f64, dy: f64) -> Result<(), String> {
-    let scale = window.scale_factor().unwrap_or(1.0);
-    let current_pos = window.outer_position().map_err(|e| e.to_string())?;
-    let phys_dx = (dx * scale).round() as i32;
-    let phys_dy = (dy * scale).round() as i32;
-    let new_pos = tauri::PhysicalPosition::new(current_pos.x + phys_dx, current_pos.y + phys_dy);
-    window.set_position(new_pos).map_err(|e| e.to_string())?;
+pub fn update_drag_move(window: tauri::WebviewWindow, total_dx: f64, total_dy: f64) -> Result<(), String> {
+    let session = DRAG_SESSION.lock().map_err(|e| e.to_string())?;
+    if let Some((start_x, start_y, scale)) = *session {
+        let phys_dx = (total_dx * scale).round() as i32;
+        let phys_dy = (total_dy * scale).round() as i32;
+        let target_pos = tauri::PhysicalPosition::new(start_x + phys_dx, start_y + phys_dy);
+        window.set_position(target_pos).map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
+
+#[tauri::command]
+pub fn end_drag_move() -> Result<(), String> {
+    if let Ok(mut session) = DRAG_SESSION.lock() {
+        *session = None;
+    }
+    Ok(())
+}
+

@@ -41,76 +41,75 @@ async function closeWidget() {
 }
 
 let isDragging = false;
-let lastScreenX = 0;
-let lastScreenY = 0;
-let accumDx = 0;
-let accumDy = 0;
+let startScreenX = 0;
+let startScreenY = 0;
+let pendingTotalDx = 0;
+let pendingTotalDy = 0;
 let rafId: number | null = null;
 
 function onPointerDown(e: PointerEvent) {
   if (e.button !== 0) return;
   const target = e.target as HTMLElement;
-  if (target.closest('button') || target.closest('a')) return;
+  if (target.closest('button') || target.closest('a') || target.closest('[data-no-drag]')) return;
 
   isDragging = true;
-  lastScreenX = e.screenX;
-  lastScreenY = e.screenY;
-  accumDx = 0;
-  accumDy = 0;
+  startScreenX = e.screenX;
+  startScreenY = e.screenY;
+  pendingTotalDx = 0;
+  pendingTotalDy = 0;
 
   try {
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   } catch {}
 
-  invoke('start_drag').catch(() => {});
+  // Request Rust to record window start position
+  invoke('start_drag_move').catch((err) => {
+    console.error('start_drag_move failed:', err);
+  });
 }
 
 function onPointerMove(e: PointerEvent) {
   if (!isDragging) return;
 
-  const dx = e.screenX - lastScreenX;
-  const dy = e.screenY - lastScreenY;
-  lastScreenX = e.screenX;
-  lastScreenY = e.screenY;
-
-  accumDx += dx;
-  accumDy += dy;
+  pendingTotalDx = e.screenX - startScreenX;
+  pendingTotalDy = e.screenY - startScreenY;
 
   if (!rafId) {
     rafId = requestAnimationFrame(async () => {
       rafId = null;
-      if (!isDragging && accumDx === 0 && accumDy === 0) return;
-      const moveX = accumDx;
-      const moveY = accumDy;
-      accumDx = 0;
-      accumDy = 0;
-      if (moveX !== 0 || moveY !== 0) {
-        try {
-          await invoke('drag_move_window', { dx: moveX, dy: moveY });
-        } catch {}
-      }
+      if (!isDragging) return;
+      const dx = pendingTotalDx;
+      const dy = pendingTotalDy;
+      try {
+        await invoke('update_drag_move', { totalDx: dx, totalDy: dy });
+      } catch {}
     });
   }
 }
 
-function onPointerUp(e: PointerEvent) {
+async function onPointerUp(e: PointerEvent) {
   if (isDragging) {
     isDragging = false;
     if (rafId) {
       cancelAnimationFrame(rafId);
       rafId = null;
     }
-    if (accumDx !== 0 || accumDy !== 0) {
-      const moveX = accumDx;
-      const moveY = accumDy;
-      accumDx = 0;
-      accumDy = 0;
-      invoke('drag_move_window', { dx: moveX, dy: moveY }).catch(() => {});
-    }
+    const finalDx = e.screenX - startScreenX;
+    const finalDy = e.screenY - startScreenY;
     try {
       (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
     } catch {}
+    try {
+      await invoke('update_drag_move', { totalDx: finalDx, totalDy: finalDy });
+    } catch {}
+    try {
+      await invoke('end_drag_move');
+    } catch {}
   }
+}
+
+function onPointerCancel(e: PointerEvent) {
+  onPointerUp(e);
 }
 
 const currentPercent = computed(() => {
@@ -169,11 +168,13 @@ onUnmounted(() => {
     @pointerdown="onPointerDown"
     @pointermove="onPointerMove"
     @pointerup="onPointerUp"
-    @pointercancel="onPointerUp"
+    @pointercancel="onPointerCancel"
     class="w-full h-full select-none flex items-center justify-between px-2.5 py-1 bg-[#0b0f19]/95 text-slate-200 border border-slate-700/60 rounded-xl shadow-2xl backdrop-blur-md cursor-grab active:cursor-grabbing group hover:border-indigo-500/40 transition-colors"
+    style="-webkit-user-drag: none; user-select: none;"
   >
     <!-- Left: Provider Switcher Pill -->
     <div
+      data-no-drag
       @click.stop="cycleProvider"
       class="flex items-center space-x-1.5 cursor-pointer hover:opacity-80 transition py-0.5 px-1 rounded-lg hover:bg-slate-800/60"
       title="点击切换监控服务商"
@@ -185,7 +186,7 @@ onUnmounted(() => {
     </div>
 
     <!-- Center: Progress & Usage -->
-    <div class="flex-1 mx-2 flex flex-col justify-center space-y-0.5">
+    <div class="flex-1 mx-2 flex flex-col justify-center space-y-0.5 pointer-events-none">
       <div class="flex items-center justify-between text-[9px] font-mono leading-none">
         <span class="text-slate-400 font-sans">
           {{ currentProvider === 'grok' ? '周期用量' : '5h用量' }}
@@ -212,18 +213,20 @@ onUnmounted(() => {
     </div>
 
     <!-- Right: Mini Actions -->
-    <div class="flex items-center space-x-0.5 shrink-0">
+    <div data-no-drag class="flex items-center space-x-0.5 shrink-0">
       <button
+        data-no-drag
         @click.stop="fetchUsage"
         :disabled="isRefreshing"
-        class="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition"
+        class="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
         title="刷新"
       >
         <RefreshCw class="w-2.5 h-2.5" :class="{ 'animate-spin': isRefreshing }" />
       </button>
       <button
+        data-no-drag
         @click.stop="closeWidget"
-        class="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-slate-800 transition"
+        class="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-slate-800 transition cursor-pointer"
         title="关闭悬浮窗"
       >
         <X class="w-2.5 h-2.5" />
