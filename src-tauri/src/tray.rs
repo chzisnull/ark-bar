@@ -132,9 +132,9 @@ pub fn update_tray_title(app: AppHandle, title: String) -> Result<(), String> {
         {
             let trimmed = title.trim();
             let tip = if trimmed.is_empty() {
-                "ArkBar - 火山方舟配额监控".to_string()
+                "ArkBar - 多模型配额监控".to_string()
             } else {
-                format!("ArkBar - 火山方舟配额监控 [{}]", trimmed)
+                format!("ArkBar - 多模型配额监控 [{}]", trimmed)
             };
             let _ = tray.set_tooltip(Some(&tip));
         }

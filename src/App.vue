@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch, defineAsyncComponent } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import type { EnvironmentStatus, UpdateInfo, ProviderType, ProviderUsageData } from './types';
 import UsagePanel from './components/UsagePanel.vue';
 
@@ -58,8 +59,6 @@ function loadCachedProviders(): Record<ProviderType, ProviderUsageData | null> {
 }
 
 const providersData = ref<Record<ProviderType, ProviderUsageData | null>>(loadCachedProviders());
-
-let timer: any = null;
 
 function saveCachedProviders() {
   try {
@@ -158,30 +157,38 @@ function updateTrayTitle() {
   }
 }
 
-function setupTimer() {
-  if (timer) clearInterval(timer);
-  if (refreshInterval.value > 0) {
-    timer = setInterval(() => {
-      if (currentView.value === 'panel') {
-        fetchProviderUsage(activeProvider.value, true, true);
-      }
-    }, refreshInterval.value * 60 * 1000);
-  }
+// 周期刷新由 Rust 后台线程负责（主窗口隐藏时 webview 定时器会被 macOS/
+// Windows 挂起，因此不能依赖前端 setInterval）。这里只把用户设置同步给后
+// 端，并监听后台线程广播的 usage-updated 事件更新界面与托盘。
+function syncBackgroundPrefs() {
+  invoke('set_background_interval', { minutes: refreshInterval.value }).catch(() => {});
+  invoke('set_tray_prefs', {
+    target: trayTarget.value,
+    showPercent: showPercentageInTray.value,
+  }).catch(() => {});
 }
 
 watch(refreshInterval, (val) => {
   localStorage.setItem('arkbar_refresh_interval', String(val));
-  setupTimer();
+  invoke('set_background_interval', { minutes: val }).catch(() => {});
 });
 
 watch(showPercentageInTray, (val) => {
   localStorage.setItem('arkbar_tray_percent', String(val));
   updateTrayTitle();
+  invoke('set_tray_prefs', {
+    target: trayTarget.value,
+    showPercent: val,
+  }).catch(() => {});
 });
 
 watch(trayTarget, (val) => {
   localStorage.setItem('arkbar_tray_target', val);
   updateTrayTitle();
+  invoke('set_tray_prefs', {
+    target: val,
+    showPercent: showPercentageInTray.value,
+  }).catch(() => {});
 });
 
 async function checkAutoUpdate() {
@@ -207,6 +214,10 @@ function onPanelBecomeVisible() {
   fetchProviderUsage(activeProvider.value, true, false);
 }
 
+// 后台线程每轮刷新后逐厂商广播，这里更新本地状态并落盘
+// （localStorage 变更也会通过 storage 事件同步给悬浮窗）。
+let unlistenUsage: (() => void) | null = null;
+
 onMounted(() => {
   // The float webview must stay a cheap renderer. All CLI/network work
   // belongs to the main window so tray clicks are not fighting a second
@@ -216,11 +227,20 @@ onMounted(() => {
   }
 
   updateTrayTitle();
+  syncBackgroundPrefs();
 
   const hasCached = !!providersData.value[activeProvider.value];
   fetchProviderUsage(activeProvider.value, hasCached, !hasCached);
 
-  setupTimer();
+  listen<ProviderUsageData>('usage-updated', (event) => {
+    const data = event.payload;
+    if (!data || !(data.provider in providersData.value)) return;
+    providersData.value[data.provider as ProviderType] = data;
+    saveCachedProviders();
+    updateTrayTitle();
+  }).then((un) => {
+    unlistenUsage = un;
+  });
 
   window.addEventListener('focus', onPanelBecomeVisible);
   document.addEventListener('visibilitychange', () => {
@@ -240,7 +260,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('focus', onPanelBecomeVisible);
-  if (timer) clearInterval(timer);
+  if (unlistenUsage) unlistenUsage();
 });
 </script>
 

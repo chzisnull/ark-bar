@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import type { ProviderType, ProviderUsageData } from '../types';
 import { X, RefreshCw } from 'lucide-vue-next';
@@ -44,7 +45,6 @@ const isHovered = ref(false);
 const showQuickMenu = ref(false);
 let quickMenuTimer: any = null;
 let hoverTimer: any = null;
-let refreshTimer: any = null;
 
 // Filter all authorized providers (is_connected === true)
 const authorizedProviders = computed(() => {
@@ -293,6 +293,20 @@ function handleStorageChange(e: StorageEvent) {
   }
 }
 
+// Rust 后台线程每轮刷新后逐厂商广播；悬浮窗自身的 setInterval 在窗口隐藏
+// 时同样会被系统挂起，所以数据更新以这里的事件为主。
+function handleUsageUpdated(data: ProviderUsageData) {
+  if (!data || !(data.provider in allCachedData.value)) return;
+  allCachedData.value[data.provider as ProviderType] = data;
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify(allCachedData.value));
+  } catch {}
+}
+
+let unlistenUsage: (() => void) | null = null;
+let unlistenFocus: (() => void) | null = null;
+let lastFocusRefresh = 0;
+
 onMounted(() => {
   // Render from local cache immediately. A delayed, silent refresh of the
   // primary provider is enough — the main window already prefetches all four.
@@ -300,14 +314,27 @@ onMounted(() => {
     fetchUsage();
   }
   setTimeout(fetchAllUsage, 8000);
-  refreshTimer = setInterval(fetchAllUsage, 10 * 60 * 1000);
+  listen<ProviderUsageData>('usage-updated', (event) => handleUsageUpdated(event.payload)).then((un) => {
+    unlistenUsage = un;
+  });
+  // 窗口隐藏期间事件可能丢失，重新显示/聚焦时补一次非强制刷新
+  // （Rust 缓存通常已被后台线程刷新，秒回）。
+  getCurrentWebviewWindow().listen('tauri://focus', () => {
+    const now = Date.now();
+    if (now - lastFocusRefresh < 30000) return;
+    lastFocusRefresh = now;
+    fetchAllUsage();
+  }).then((un) => {
+    unlistenFocus = un;
+  });
   window.addEventListener('storage', handleStorageChange);
   window.addEventListener('pointerup', releaseHoverFreeze);
   window.addEventListener('mouseup', releaseHoverFreeze);
 });
 
 onUnmounted(() => {
-  if (refreshTimer) clearInterval(refreshTimer);
+  if (unlistenUsage) unlistenUsage();
+  if (unlistenFocus) unlistenFocus();
   if (quickMenuTimer) clearTimeout(quickMenuTimer);
   if (hoverTimer) clearTimeout(hoverTimer);
   window.removeEventListener('storage', handleStorageChange);

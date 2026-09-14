@@ -78,8 +78,12 @@ impl UsageCache {
             if let Some(stale) = self.get_stale(STALE_TTL) {
                 if self.begin_refresh() {
                     std::thread::spawn(move || {
-                        let data = fetch();
-                        self.set_prefer_connected(data);
+                        // 捕获 panic：保证 set/set_prefer_connected 未执行时
+                        // 也复位单飞标志，refreshing 不会永久卡死
+                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(fetch)) {
+                            Ok(data) => self.set_prefer_connected(data),
+                            Err(_) => self.refreshing.store(false, Ordering::SeqCst),
+                        }
                     });
                 }
                 return stale;
@@ -88,7 +92,10 @@ impl UsageCache {
 
         let data = fetch();
         self.set_prefer_connected(data.clone());
-        data
+        // set_prefer_connected 在拉取失败时会保留上次成功的缓存；
+        // 返回"生效后"的数据，避免把瞬时失败扩散给调用方
+        // （后台线程 emit、托盘标题与前端展示共用这条路径）。
+        self.peek().unwrap_or(data)
     }
 
     pub fn begin_refresh(&self) -> bool {

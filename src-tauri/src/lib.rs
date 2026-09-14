@@ -2,6 +2,7 @@ mod env_resolver;
 mod ark_cli;
 mod tray;
 mod updater;
+mod background;
 mod provider_models;
 mod provider_antigravity;
 mod provider_grok;
@@ -28,6 +29,27 @@ pub fn run() {
 
             // Initialize Menu Bar Tray
             tray::setup_tray(app.handle())?;
+
+            // Disable macOS App Nap: with every window hidden the system may
+            // suspend the whole process, which would freeze the background
+            // sync thread and stall the tray percentage. The activity handle
+            // is intentionally kept for the process lifetime.
+            #[cfg(target_os = "macos")]
+            {
+                use objc2_foundation::{NSActivityOptions, NSProcessInfo, NSString};
+                let info = NSProcessInfo::processInfo();
+                // NSActivityUserInitiatedAllowingIdleSystemSleep
+                // = 0x00FFFFFF & !NSActivityIdleSystemSleepDisabled(1 << 20)
+                let activity = info.beginActivityWithOptions_reason(
+                    NSActivityOptions(0x00EF_FFFF),
+                    &NSString::from_str("ArkBar 定时同步各平台配额"),
+                );
+                std::mem::forget(activity);
+            }
+
+            // Native periodic usage sync (webview timers are suspended while
+            // the popover window is hidden).
+            background::spawn(app.handle().clone());
 
             // Hide window when clicking outside (loss of focus).
             // Ignore blur for a short window after tray-clicks so the popover
@@ -78,6 +100,8 @@ pub fn run() {
             ark_cli::get_usage_plan,
             ark_cli::check_for_updates,
             updater::install_app_update,
+            background::set_background_interval,
+            background::set_tray_prefs,
             provider_manager::get_unified_usage,
             provider_manager::peek_cached_usage,
             provider_manager::get_all_providers_usage,
