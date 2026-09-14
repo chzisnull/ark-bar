@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 use serde_json::Value;
-use crate::env_resolver::execute_cmd;
+use crate::env_resolver::execute_cmd_timeout;
 use crate::provider_models::{
     ProviderAccountInfo, ProviderPlanGroup, ProviderQuotaPeriod, ProviderUsageData,
 };
@@ -79,22 +79,11 @@ fn get_active_google_email() -> Option<String> {
 }
 
 pub fn get_antigravity_usage() -> ProviderUsageData {
-    if let Some(fresh) = AGY_CACHE.get_fresh(Duration::from_secs(90)) {
-        return fresh;
-    }
-    if let Some(stale) = AGY_CACHE.get_stale(Duration::from_secs(15 * 60)) {
-        if AGY_CACHE.begin_refresh() {
-            std::thread::spawn(|| {
-                let data = fetch_antigravity_usage_uncached();
-                AGY_CACHE.set(data);
-            });
-        }
-        return stale;
-    }
+    get_antigravity_usage_forced(false)
+}
 
-    let data = fetch_antigravity_usage_uncached();
-    AGY_CACHE.set(data.clone());
-    data
+pub fn get_antigravity_usage_forced(force: bool) -> ProviderUsageData {
+    AGY_CACHE.get_or_refresh(force, fetch_antigravity_usage_uncached)
 }
 
 pub fn peek_antigravity_usage() -> Option<ProviderUsageData> {
@@ -105,9 +94,16 @@ fn fetch_antigravity_usage_uncached() -> ProviderUsageData {
     let cmd = resolve_agy_command();
     let email = get_active_google_email();
 
-    let output = match execute_cmd(&cmd, &["-p", "/usage", "--output-format", "json"]) {
+    let output = match execute_cmd_timeout(
+        &cmd,
+        &["-p", "/usage", "--output-format", "json"],
+        Duration::from_secs(45),
+    ) {
         Ok(out) => out,
         Err(e) => {
+            if let Some(cached) = AGY_CACHE.peek().filter(|d| d.is_connected) {
+                return cached;
+            }
             return ProviderUsageData {
                 provider: "antigravity".to_string(),
                 provider_name: "Google Antigravity".to_string(),
@@ -130,6 +126,9 @@ fn fetch_antigravity_usage_uncached() -> ProviderUsageData {
     };
 
     if !output.status.success() {
+        if let Some(cached) = AGY_CACHE.peek().filter(|d| d.is_connected) {
+            return cached;
+        }
         let stderr = String::from_utf8_lossy(&output.stderr);
         return ProviderUsageData {
             provider: "antigravity".to_string(),
@@ -155,6 +154,9 @@ fn fetch_antigravity_usage_uncached() -> ProviderUsageData {
     let json_val: Value = match serde_json::from_str(&stdout_str) {
         Ok(v) => v,
         Err(e) => {
+            if let Some(cached) = AGY_CACHE.peek().filter(|d| d.is_connected) {
+                return cached;
+            }
             return ProviderUsageData {
                 provider: "antigravity".to_string(),
                 provider_name: "Google Antigravity".to_string(),
@@ -255,6 +257,5 @@ fn fetch_antigravity_usage_uncached() -> ProviderUsageData {
         console_url: Some("https://antigravity.google".to_string()),
     };
 
-    AGY_CACHE.set(result.clone());
     result
 }

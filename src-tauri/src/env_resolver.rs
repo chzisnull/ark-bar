@@ -237,7 +237,7 @@ pub fn create_command(cmd: &str) -> Command {
 }
 
 pub fn execute_cmd(cmd: &str, args: &[&str]) -> Result<Output, String> {
-    execute_cmd_timeout(cmd, args, Duration::from_secs(8))
+    execute_cmd_timeout(cmd, args, Duration::from_secs(20))
 }
 
 pub fn execute_cmd_timeout(cmd: &str, args: &[&str], timeout: Duration) -> Result<Output, String> {
@@ -283,7 +283,18 @@ pub fn execute_cmd_timeout(cmd: &str, args: &[&str], timeout: Duration) -> Resul
             }
             Ok(None) => {
                 if started.elapsed() > timeout {
-                    let _ = child.kill();
+                    #[cfg(target_os = "windows")]
+                    {
+                        let pid = child.id();
+                        let _ = Command::new("taskkill")
+                            .args(["/F", "/T", "/PID", &pid.to_string()])
+                            .creation_flags(0x08000000)
+                            .status();
+                    }
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        let _ = child.kill();
+                    }
                     let _ = child.wait();
                     return Err(format!("命令 '{}' 超时 ({}s)", cmd, timeout.as_secs()));
                 }

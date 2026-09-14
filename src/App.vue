@@ -28,7 +28,7 @@ const showPercentageInTray = ref<boolean>(
 );
 
 const refreshInterval = ref<number>(
-  Number(localStorage.getItem('arkbar_refresh_interval')) || 15
+  Number(localStorage.getItem('arkbar_refresh_interval')) || 5
 );
 
 // 0ms startup: hydrate from local cache immediately
@@ -73,8 +73,11 @@ async function checkEnv() {
 const inFlight = new Set<ProviderType>();
 
 // Fetch provider usage: supports silent background refresh to avoid UI freezes
-async function fetchProviderUsage(provider: ProviderType, silent = false) {
-  if (inFlight.has(provider)) return;
+async function fetchProviderUsage(provider: ProviderType, silent = false, force = false) {
+  if (inFlight.has(provider) && !force) return;
+  if (inFlight.has(provider) && force) {
+    // Allow a forced refresh to proceed after the in-flight call finishes.
+  }
   inFlight.add(provider);
 
   if (!silent) {
@@ -84,6 +87,7 @@ async function fetchProviderUsage(provider: ProviderType, silent = false) {
     const data = await invoke<ProviderUsageData>('get_unified_usage', {
       provider,
       customToken: null,
+      force,
     });
     providersData.value[provider] = data;
     saveCachedProviders();
@@ -128,7 +132,7 @@ function handleGoAuth(provider: ProviderType) {
 }
 
 async function handleRefreshCurrent() {
-  await fetchProviderUsage(activeProvider.value, false);
+  await fetchProviderUsage(activeProvider.value, false, true);
 }
 
 function updateTrayTitle() {
@@ -154,7 +158,7 @@ function setupTimer() {
   if (refreshInterval.value > 0) {
     timer = setInterval(() => {
       if (currentView.value === 'panel') {
-        fetchProviderUsage(activeProvider.value, true);
+        fetchProviderUsage(activeProvider.value, true, true);
       }
     }, refreshInterval.value * 60 * 1000);
   }
@@ -189,6 +193,11 @@ async function handleOnboardingComplete() {
   await fetchProviderUsage('volcengine');
 }
 
+function onPanelBecomeVisible() {
+  if (isFloatWindow.value) return;
+  fetchProviderUsage(activeProvider.value, true, true);
+}
+
 onMounted(() => {
   // The float webview must stay a cheap renderer. All CLI/network work
   // belongs to the main window so tray clicks are not fighting a second
@@ -200,9 +209,16 @@ onMounted(() => {
   updateTrayTitle();
 
   const hasCached = !!providersData.value[activeProvider.value];
-  fetchProviderUsage(activeProvider.value, hasCached);
+  fetchProviderUsage(activeProvider.value, hasCached, true);
 
   setupTimer();
+
+  window.addEventListener('focus', onPanelBecomeVisible);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      onPanelBecomeVisible();
+    }
+  });
 
   setTimeout(() => {
     prefetchOtherProviders();
@@ -214,6 +230,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  window.removeEventListener('focus', onPanelBecomeVisible);
   if (timer) clearInterval(timer);
 });
 </script>

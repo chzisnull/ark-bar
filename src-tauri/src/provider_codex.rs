@@ -1,6 +1,5 @@
 use std::env;
 use std::path::PathBuf;
-use std::time::Duration;
 use serde_json::Value;
 use crate::env_resolver::execute_cmd;
 use crate::provider_models::{
@@ -198,26 +197,14 @@ fn try_read_local_cached_usage() -> Option<ProviderUsageData> {
 }
 
 pub fn get_codex_usage(custom_token: Option<&str>) -> ProviderUsageData {
-    if custom_token.is_none() {
-        if let Some(fresh) = CODEX_CACHE.get_fresh(Duration::from_secs(90)) {
-            return fresh;
-        }
-        if let Some(stale) = CODEX_CACHE.get_stale(Duration::from_secs(15 * 60)) {
-            if CODEX_CACHE.begin_refresh() {
-                std::thread::spawn(|| {
-                    let data = fetch_codex_usage_uncached(None);
-                    CODEX_CACHE.set(data);
-                });
-            }
-            return stale;
-        }
-    }
+    get_codex_usage_forced(custom_token, false)
+}
 
-    let data = fetch_codex_usage_uncached(custom_token);
-    if custom_token.is_none() {
-        CODEX_CACHE.set(data.clone());
+pub fn get_codex_usage_forced(custom_token: Option<&str>, force: bool) -> ProviderUsageData {
+    if custom_token.is_some() {
+        return fetch_codex_usage_uncached(custom_token);
     }
-    data
+    CODEX_CACHE.get_or_refresh(force, || fetch_codex_usage_uncached(None))
 }
 
 pub fn peek_codex_usage() -> Option<ProviderUsageData> {

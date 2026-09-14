@@ -51,13 +51,49 @@ impl UsageCache {
         self.refreshing.store(false, Ordering::SeqCst);
     }
 
+    /// Keep the last successful payload if a refresh fails or times out.
+    pub fn set_prefer_connected(&self, data: ProviderUsageData) {
+        if !data.is_connected {
+            if let Some(old) = self.peek() {
+                if old.is_connected {
+                    self.refreshing.store(false, Ordering::SeqCst);
+                    return;
+                }
+            }
+        }
+        self.set(data);
+    }
+
+    pub fn get_or_refresh<F>(&'static self, force: bool, fetch: F) -> ProviderUsageData
+    where
+        F: FnOnce() -> ProviderUsageData + Send + 'static,
+    {
+        const FRESH_TTL: Duration = Duration::from_secs(20);
+        const STALE_TTL: Duration = Duration::from_secs(2 * 60);
+
+        if !force {
+            if let Some(fresh) = self.get_fresh(FRESH_TTL) {
+                return fresh;
+            }
+            if let Some(stale) = self.get_stale(STALE_TTL) {
+                if self.begin_refresh() {
+                    std::thread::spawn(move || {
+                        let data = fetch();
+                        self.set_prefer_connected(data);
+                    });
+                }
+                return stale;
+            }
+        }
+
+        let data = fetch();
+        self.set_prefer_connected(data.clone());
+        data
+    }
+
     pub fn begin_refresh(&self) -> bool {
         self.refreshing
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
-    }
-
-    pub fn end_refresh(&self) {
-        self.refreshing.store(false, Ordering::SeqCst);
     }
 }

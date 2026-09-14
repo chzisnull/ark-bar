@@ -155,6 +155,7 @@ async function fetchUsage() {
     const data = await invoke<ProviderUsageData>('get_unified_usage', {
       provider: primaryProvider.value,
       customToken: null,
+      force: true,
     });
     allCachedData.value[primaryProvider.value] = data;
     try {

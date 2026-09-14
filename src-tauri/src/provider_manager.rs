@@ -1,19 +1,24 @@
 use std::thread;
-use crate::ark_cli::{get_volcengine_usage, peek_volcengine_usage};
-use crate::provider_antigravity::{get_antigravity_usage, peek_antigravity_usage};
-use crate::provider_codex::{get_codex_usage, peek_codex_usage};
-use crate::provider_grok::{get_grok_usage, peek_grok_usage};
+use crate::ark_cli::{get_volcengine_usage, get_volcengine_usage_forced, peek_volcengine_usage};
+use crate::provider_antigravity::{get_antigravity_usage, get_antigravity_usage_forced, peek_antigravity_usage};
+use crate::provider_codex::{get_codex_usage, get_codex_usage_forced, peek_codex_usage};
+use crate::provider_grok::{get_grok_usage, get_grok_usage_forced, peek_grok_usage};
 use crate::provider_models::ProviderUsageData;
 use crate::token_store::{get_token, save_token};
 
 #[tauri::command]
-pub fn get_unified_usage(provider: String, custom_token: Option<String>) -> Result<ProviderUsageData, String> {
+pub fn get_unified_usage(
+    provider: String,
+    custom_token: Option<String>,
+    force: Option<bool>,
+) -> Result<ProviderUsageData, String> {
+    let force = force.unwrap_or(false);
     let token = custom_token.or_else(|| get_token(&provider));
     match provider.as_str() {
-        "volcengine" => Ok(get_volcengine_usage()),
-        "antigravity" => Ok(get_antigravity_usage()),
-        "grok" => Ok(get_grok_usage(token.as_deref())),
-        "codex" => Ok(get_codex_usage(token.as_deref())),
+        "volcengine" => Ok(get_volcengine_usage_forced(force)),
+        "antigravity" => Ok(get_antigravity_usage_forced(force)),
+        "grok" => Ok(get_grok_usage_forced(token.as_deref(), force)),
+        "codex" => Ok(get_codex_usage_forced(token.as_deref(), force)),
         unknown => Err(format!("未知的服务商: {}", unknown)),
     }
 }

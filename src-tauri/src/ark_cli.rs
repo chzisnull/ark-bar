@@ -315,10 +315,16 @@ pub struct VolcSeatMilestones {
 static SEAT_CACHE: Mutex<Option<(Instant, VolcSeatMilestones)>> = Mutex::new(None);
 
 pub fn query_volc_seat_usage(known_seat_id: Option<&str>) -> Option<VolcSeatMilestones> {
-    if let Ok(guard) = SEAT_CACHE.lock() {
-        if let Some((cached_at, ref data)) = *guard {
-            if cached_at.elapsed() < Duration::from_secs(10 * 60) {
-                return Some(data.clone());
+    query_volc_seat_usage_cached(known_seat_id, false)
+}
+
+fn query_volc_seat_usage_cached(known_seat_id: Option<&str>, force: bool) -> Option<VolcSeatMilestones> {
+    if !force {
+        if let Ok(guard) = SEAT_CACHE.lock() {
+            if let Some((cached_at, ref data)) = *guard {
+                if cached_at.elapsed() < Duration::from_secs(2 * 60) {
+                    return Some(data.clone());
+                }
             }
         }
     }
@@ -392,62 +398,33 @@ pub fn query_volc_seat_usage(known_seat_id: Option<&str>) -> Option<VolcSeatMile
 }
 
 pub fn get_volcengine_usage() -> ProviderUsageData {
-    if let Some(fresh) = VOLC_CACHE.get_fresh(Duration::from_secs(90)) {
-        return fresh;
-    }
-    if let Some(stale) = VOLC_CACHE.get_stale(Duration::from_secs(15 * 60)) {
-        if VOLC_CACHE.begin_refresh() {
-            std::thread::spawn(|| {
-                let data = fetch_volcengine_usage_uncached();
-                VOLC_CACHE.set(data);
-                VOLC_CACHE.end_refresh();
-            });
-        }
-        return stale;
-    }
+    get_volcengine_usage_forced(false)
+}
 
-    let data = fetch_volcengine_usage_uncached();
-    VOLC_CACHE.set(data.clone());
-    data
+pub fn get_volcengine_usage_forced(force: bool) -> ProviderUsageData {
+    VOLC_CACHE.get_or_refresh(force, move || fetch_volcengine_usage_uncached(force))
 }
 
 pub fn peek_volcengine_usage() -> Option<ProviderUsageData> {
     VOLC_CACHE.peek()
 }
 
-fn fetch_volcengine_usage_uncached() -> ProviderUsageData {
-    // 1. Query usage plan (single arkcli spawn). Seat milestones are overlaid
-    // from a 10-minute cache so we do not pay 2-3 Node CLI cold starts per click.
+fn fetch_volcengine_usage_uncached(force: bool) -> ProviderUsageData {
     match get_usage_plan() {
         Ok(json_val) => {
             let mut groups = Vec::new();
             let mut primary_session_percent = None;
             let mut primary_reset_at = None;
 
-            // Extract seat_id from first item if available
             let known_seat = json_val.get("items")
                 .and_then(|i| i.as_array())
                 .and_then(|arr| arr.first())
                 .and_then(|item| item.get("seat_id"))
                 .and_then(|s| s.as_str());
 
-            // Overlay seat milestones only when already cached. A cold seat
-            // lookup is another Node CLI spawn — do it in the background.
-            let seat_milestones = SEAT_CACHE.lock().ok().and_then(|guard| {
-                guard.as_ref().and_then(|(cached_at, data)| {
-                    if cached_at.elapsed() < Duration::from_secs(10 * 60) {
-                        Some(data.clone())
-                    } else {
-                        None
-                    }
-                })
-            });
-            if seat_milestones.is_none() {
-                let seat_owned = known_seat.map(|s| s.to_string());
-                std::thread::spawn(move || {
-                    let _ = query_volc_seat_usage(seat_owned.as_deref());
-                });
-            }
+            // Session/weekly reset timestamps only exist on the seat API.
+            // Wait for them here so the UI is not missing countdown badges.
+            let seat_milestones = query_volc_seat_usage_cached(known_seat, force);
 
             if let Some(items) = json_val.get("items").and_then(|i| i.as_array()) {
                 for item in items {
@@ -549,7 +526,6 @@ fn fetch_volcengine_usage_uncached() -> ProviderUsageData {
                 console_url: Some("https://console.volcengine.com/ark/region:cn-beijing/subscription/coding-plan-enterprise".to_string()),
             };
 
-            VOLC_CACHE.set(result.clone());
             result
         }
         Err(e) => {
@@ -616,7 +592,6 @@ fn fetch_volcengine_usage_uncached() -> ProviderUsageData {
                     console_url: Some("https://console.volcengine.com/ark/region:cn-beijing/subscription/coding-plan-enterprise".to_string()),
                 };
 
-                VOLC_CACHE.set(result.clone());
                 return result;
             }
 

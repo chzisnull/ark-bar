@@ -1,6 +1,5 @@
 use std::env;
 use std::path::PathBuf;
-use std::time::Duration;
 use serde_json::Value;
 use crate::env_resolver::execute_cmd;
 use crate::provider_models::{
@@ -78,26 +77,14 @@ pub fn get_grok_auth(custom_token: Option<&str>) -> Option<GrokAuthData> {
 }
 
 pub fn get_grok_usage(custom_token: Option<&str>) -> ProviderUsageData {
-    if custom_token.is_none() {
-        if let Some(fresh) = GROK_CACHE.get_fresh(Duration::from_secs(90)) {
-            return fresh;
-        }
-        if let Some(stale) = GROK_CACHE.get_stale(Duration::from_secs(15 * 60)) {
-            if GROK_CACHE.begin_refresh() {
-                std::thread::spawn(|| {
-                    let data = fetch_grok_usage_uncached(None);
-                    GROK_CACHE.set(data);
-                });
-            }
-            return stale;
-        }
-    }
+    get_grok_usage_forced(custom_token, false)
+}
 
-    let data = fetch_grok_usage_uncached(custom_token);
-    if custom_token.is_none() {
-        GROK_CACHE.set(data.clone());
+pub fn get_grok_usage_forced(custom_token: Option<&str>, force: bool) -> ProviderUsageData {
+    if custom_token.is_some() {
+        return fetch_grok_usage_uncached(custom_token);
     }
-    data
+    GROK_CACHE.get_or_refresh(force, || fetch_grok_usage_uncached(None))
 }
 
 pub fn peek_grok_usage() -> Option<ProviderUsageData> {
