@@ -1,10 +1,42 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::time::Duration;
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager,
+    AppHandle, Manager, WebviewWindow,
 };
 use tauri_plugin_positioner::{Position, WindowExt};
+
+static FLOAT_PLACED: AtomicBool = AtomicBool::new(false);
+pub static IGNORE_UNFOCUS_HIDE: AtomicBool = AtomicBool::new(false);
+static LAST_TRAY_TITLE: Mutex<String> = Mutex::new(String::new());
+
+fn arm_ignore_unfocus_hide() {
+    IGNORE_UNFOCUS_HIDE.store(true, Ordering::SeqCst);
+    std::thread::spawn(|| {
+        std::thread::sleep(Duration::from_millis(450));
+        IGNORE_UNFOCUS_HIDE.store(false, Ordering::SeqCst);
+    });
+}
+
+fn show_main_popover(window: &WebviewWindow) {
+    arm_ignore_unfocus_hide();
+    let _ = window.move_window_constrained(Position::TrayCenter);
+    let _ = window.show();
+    let _ = window.set_focus();
+}
+
+fn reveal_float_window(window: &WebviewWindow) {
+    // Only snap to the default corner the first time. After the user drags
+    // the widget, keep that position across hide/show and size changes.
+    if !FLOAT_PLACED.swap(true, Ordering::SeqCst) {
+        let _ = window.move_window(Position::TopRight);
+    }
+    let _ = window.show();
+    let _ = window.set_focus();
+}
 
 pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "macos")]
@@ -32,9 +64,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 "show" => {
                     if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.move_window_constrained(Position::TrayCenter);
-                        let _ = window.show();
-                        let _ = window.set_focus();
+                        show_main_popover(&window);
                     }
                 }
                 "toggle_float" => {
@@ -42,9 +72,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                         if window.is_visible().unwrap_or(false) {
                             let _ = window.hide();
                         } else {
-                            let _ = window.move_window(Position::TopRight);
-                            let _ = window.show();
-                            let _ = window.set_focus();
+                            reveal_float_window(&window);
                         }
                     }
                 }
@@ -71,9 +99,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     if window.is_visible().unwrap_or(false) {
                         let _ = window.hide();
                     } else {
-                        let _ = window.move_window_constrained(Position::TrayCenter);
-                        let _ = window.show();
-                        let _ = window.set_focus();
+                        show_main_popover(&window);
                     }
                 }
             }
@@ -91,6 +117,13 @@ pub fn exit_app(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub fn update_tray_title(app: AppHandle, title: String) -> Result<(), String> {
+    if let Ok(mut last) = LAST_TRAY_TITLE.lock() {
+        if *last == title {
+            return Ok(());
+        }
+        *last = title.clone();
+    }
+
     if let Some(tray) = app.tray_by_id("ark-bar-tray") {
         #[cfg(target_os = "macos")]
         let _ = tray.set_title(Some(&title));
@@ -112,9 +145,7 @@ pub fn update_tray_title(app: AppHandle, title: String) -> Result<(), String> {
 #[tauri::command]
 pub fn show_main_window(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.move_window_constrained(Position::TrayCenter);
-        let _ = window.show();
-        let _ = window.set_focus();
+        show_main_popover(&window);
     }
     Ok(())
 }
@@ -130,9 +161,7 @@ pub fn hide_window(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub fn open_float_window(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("float") {
-        let _ = window.move_window(Position::TopRight);
-        let _ = window.show();
-        let _ = window.set_focus();
+        reveal_float_window(&window);
     }
     Ok(())
 }
@@ -188,7 +217,12 @@ pub fn end_drag_move() -> Result<(), String> {
 #[tauri::command]
 pub fn set_float_window_size(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("float") {
+        let pos = window.outer_position().ok();
         let _ = window.set_size(tauri::LogicalSize::new(width, height));
+        if let Some(p) = pos {
+            let _ = window.set_position(p);
+        }
+        FLOAT_PLACED.store(true, Ordering::SeqCst);
     }
     Ok(())
 }

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import type { ProviderType, ProviderUsageData } from '../types';
 import { X, RefreshCw } from 'lucide-vue-next';
 
@@ -199,7 +200,23 @@ async function closeWidget() {
   await invoke('close_float_window');
 }
 
-// Hover expansion
+// Native OS drag (data-tauri-drag-region) takes over the mouse session.
+// Freeze hover resize while a drag is in progress so the window doesn't
+// jump or swallow the gesture when its size changes under the cursor.
+let isDragging = false;
+
+function freezeHoverForDrag() {
+  isDragging = true;
+  if (hoverTimer) clearTimeout(hoverTimer);
+  getCurrentWebviewWindow().startDragging().catch((err) => {
+    console.error('startDragging failed:', err);
+  });
+}
+
+function releaseHoverFreeze() {
+  isDragging = false;
+}
+
 function handleMouseEnter() {
   if (isDragging || showQuickMenu.value) return;
   if (hoverTimer) clearTimeout(hoverTimer);
@@ -228,107 +245,6 @@ function handleMouseLeave() {
       await invoke('set_float_window_size', { width: 260.0, height: 44.0 });
     } catch {}
   }, 150);
-}
-
-// Drag logic
-let isDragging = false;
-let hasMoved = false;
-let startScreenX = 0;
-let startScreenY = 0;
-let pendingTotalDx = 0;
-let pendingTotalDy = 0;
-let rafId: number | null = null;
-let dragTarget: HTMLElement | null = null;
-
-function onPointerDown(e: PointerEvent) {
-  if (e.button !== 0) return;
-  const target = e.target as HTMLElement;
-  // Ignore interactive buttons (refresh, close, quick menu buttons)
-  if (target.closest('button') || target.closest('a')) return;
-
-  dragTarget = target;
-  isDragging = true;
-  hasMoved = false;
-  startScreenX = e.screenX;
-  startScreenY = e.screenY;
-  pendingTotalDx = 0;
-  pendingTotalDy = 0;
-
-  if (hoverTimer) clearTimeout(hoverTimer);
-
-  try {
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  } catch {}
-
-  invoke('start_drag_move').catch((err) => {
-    console.error('start_drag_move failed:', err);
-  });
-}
-
-function onPointerMove(e: PointerEvent) {
-  if (!isDragging) return;
-
-  pendingTotalDx = e.screenX - startScreenX;
-  pendingTotalDy = e.screenY - startScreenY;
-
-  if (Math.abs(pendingTotalDx) > 3 || Math.abs(pendingTotalDy) > 3) {
-    hasMoved = true;
-  }
-
-  if (!hasMoved) return;
-
-  if (!rafId) {
-    rafId = requestAnimationFrame(async () => {
-      rafId = null;
-      if (!isDragging) return;
-      const dx = pendingTotalDx;
-      const dy = pendingTotalDy;
-      try {
-        await invoke('update_drag_move', { totalDx: dx, totalDy: dy });
-      } catch {}
-    });
-  }
-}
-
-async function onPointerUp(e: PointerEvent) {
-  if (isDragging) {
-    isDragging = false;
-    if (rafId) {
-      cancelAnimationFrame(rafId);
-      rafId = null;
-    }
-    const finalDx = e.screenX - startScreenX;
-    const finalDy = e.screenY - startScreenY;
-    try {
-      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
-    } catch {}
-
-    if (hasMoved) {
-      try {
-        await invoke('update_drag_move', { totalDx: finalDx, totalDy: finalDy });
-      } catch {}
-      try {
-        await invoke('end_drag_move');
-      } catch {}
-    } else {
-      try {
-        await invoke('end_drag_move');
-      } catch {}
-      // Click without drag
-      if (dragTarget?.closest('[data-action="cycle"]')) {
-        cycleProvider();
-      }
-      const row = dragTarget?.closest('[data-provider-id]') as HTMLElement | null;
-      if (row?.dataset.providerId) {
-        setPrimary(row.dataset.providerId as ProviderType);
-      }
-    }
-    dragTarget = null;
-  }
-}
-
-function onPointerCancel(e: PointerEvent) {
-  onPointerUp(e);
 }
 
 function handleContextMenu(e: MouseEvent) {
@@ -377,10 +293,16 @@ function handleStorageChange(e: StorageEvent) {
 }
 
 onMounted(() => {
-  fetchUsage();
-  setTimeout(fetchAllUsage, 1500);
+  // Render from local cache immediately. A delayed, silent refresh of the
+  // primary provider is enough — the main window already prefetches all four.
+  if (!currentUsage.value) {
+    fetchUsage();
+  }
+  setTimeout(fetchAllUsage, 8000);
   refreshTimer = setInterval(fetchAllUsage, 10 * 60 * 1000);
   window.addEventListener('storage', handleStorageChange);
+  window.addEventListener('pointerup', releaseHoverFreeze);
+  window.addEventListener('mouseup', releaseHoverFreeze);
 });
 
 onUnmounted(() => {
@@ -388,25 +310,31 @@ onUnmounted(() => {
   if (quickMenuTimer) clearTimeout(quickMenuTimer);
   if (hoverTimer) clearTimeout(hoverTimer);
   window.removeEventListener('storage', handleStorageChange);
+  window.removeEventListener('pointerup', releaseHoverFreeze);
+  window.removeEventListener('mouseup', releaseHoverFreeze);
 });
 </script>
 
 <template>
   <div
-    @pointerdown="onPointerDown"
-    @pointermove="onPointerMove"
-    @pointerup="onPointerUp"
-    @pointercancel="onPointerCancel"
     @mouseenter="handleMouseEnter"
     @mouseleave="handleMouseLeave"
     @contextmenu.prevent="handleContextMenu"
-    class="w-full h-full select-none bg-[#0b0f19]/95 text-slate-200 border border-slate-700/60 rounded-xl shadow-2xl backdrop-blur-md cursor-grab active:cursor-grabbing group hover:border-indigo-500/40 transition-colors overflow-hidden flex flex-col justify-center"
+    class="w-full h-full select-none bg-[#0b0f19]/95 text-slate-200 border border-slate-700/60 rounded-xl shadow-2xl backdrop-blur-md group hover:border-indigo-500/40 transition-colors overflow-hidden flex flex-col justify-center relative"
     style="-webkit-user-drag: none; user-select: none;"
   >
+    <!-- Native drag layer: OS moves the window. Buttons sit above this. -->
+    <div
+      v-if="!showQuickMenu"
+      data-tauri-drag-region
+      class="absolute inset-0 z-0 cursor-grab active:cursor-grabbing"
+      @pointerdown="freezeHoverForDrag"
+    ></div>
+
     <!-- State 1: Right-Click Quick Actions Overlay (44px) -->
     <div
       v-if="showQuickMenu"
-      class="w-full h-11 flex items-center justify-between px-2 text-[11px] font-medium"
+      class="relative z-10 w-full h-11 flex items-center justify-between px-2 text-[11px] font-medium pointer-events-auto"
       data-no-drag
     >
       <button
@@ -446,25 +374,25 @@ onUnmounted(() => {
     <!-- State 2: Multi-Provider Hover Dashboard (Expanded View) -->
     <div
       v-else-if="isHovered && authorizedProviders.length > 1"
-      class="w-full h-full p-2 flex flex-col justify-between"
+      class="relative z-10 w-full h-full p-2 flex flex-col justify-between pointer-events-none"
     >
       <div class="flex items-center justify-between pb-1 border-b border-slate-800/80 mb-1 px-1">
         <div class="flex items-center gap-1 text-[10px] text-slate-400 font-semibold">
           <span>✨</span>
           <span>已授权厂商用量</span>
         </div>
-        <div class="flex items-center gap-1">
+        <div class="flex items-center gap-1 pointer-events-auto">
           <button
             @click.stop="fetchUsage"
             :disabled="isRefreshing"
-            class="text-slate-400 hover:text-white p-0.5 rounded hover:bg-slate-800 transition"
+            class="text-slate-400 hover:text-white p-0.5 rounded hover:bg-slate-800 transition cursor-pointer"
             title="刷新数据"
           >
             <RefreshCw class="w-2.5 h-2.5" :class="{ 'animate-spin': isRefreshing }" />
           </button>
           <button
             @click.stop="closeWidget"
-            class="text-slate-400 hover:text-rose-400 p-0.5 rounded hover:bg-slate-800 transition"
+            class="text-slate-400 hover:text-rose-400 p-0.5 rounded hover:bg-slate-800 transition cursor-pointer"
             title="关闭悬浮窗"
           >
             <X class="w-2.5 h-2.5" />
@@ -477,16 +405,19 @@ onUnmounted(() => {
         <div
           v-for="item in authorizedProviders"
           :key="item.id"
-          :data-provider-id="item.id"
-          class="flex items-center justify-between px-1.5 py-1 rounded-lg hover:bg-slate-800/60 transition cursor-pointer"
+          class="flex items-center justify-between px-1.5 py-1 rounded-lg"
           :class="item.id === primaryProvider ? 'bg-indigo-950/40 border border-indigo-500/30' : 'border border-transparent'"
-          :title="`点击将 ${item.name} 设为首选常驻 (按住可自由拖拽)`"
         >
-          <!-- Left: Provider Icon & Name -->
-          <div class="flex items-center gap-1.5 min-w-[72px] pointer-events-none">
+          <!-- Left: Provider Icon & Name (button so the rest of the row stays draggable) -->
+          <button
+            type="button"
+            class="flex items-center gap-1.5 min-w-[72px] pointer-events-auto cursor-pointer rounded px-0.5 hover:bg-slate-800/60"
+            :title="`点击将 ${item.name} 设为首选常驻`"
+            @click.stop="setPrimary(item.id)"
+          >
             <span class="text-xs">{{ item.icon }}</span>
             <span class="text-[10px] font-medium text-slate-200 truncate">{{ item.name }}</span>
-          </div>
+          </button>
 
           <!-- Center: Progress Mini Bar -->
           <div class="flex-1 mx-2 flex items-center gap-1.5 pointer-events-none">
@@ -529,19 +460,20 @@ onUnmounted(() => {
     <!-- State 3: Compact Single-Row Pill Display (44px) -->
     <div
       v-else
-      class="w-full h-11 flex items-center justify-between px-2.5 py-1"
+      class="relative z-10 w-full h-11 flex items-center justify-between px-2.5 py-1 pointer-events-none"
     >
-      <!-- Left: Provider Pill (Click to cycle) -->
-      <div
-        data-action="cycle"
-        class="flex items-center space-x-1.5 cursor-pointer hover:opacity-80 transition py-0.5 px-1 rounded-lg hover:bg-slate-800/60"
+      <!-- Left: Provider Pill (Click to cycle). Rest of the pill is a native drag region. -->
+      <button
+        type="button"
+        class="flex items-center space-x-1.5 pointer-events-auto cursor-pointer hover:opacity-80 transition py-0.5 px-1 rounded-lg hover:bg-slate-800/60"
         title="点击切换展示厂商 (悬停展开所有已授权厂商，右键呼出菜单)"
+        @click.stop="cycleProvider"
       >
-        <span class="text-sm select-none pointer-events-none">{{ currentUsage?.icon || allProvidersList.find(p => p.id === primaryProvider)?.icon || '🌋' }}</span>
-        <span class="text-[10px] font-bold text-slate-300 font-mono pointer-events-none">
+        <span class="text-sm select-none">{{ currentUsage?.icon || allProvidersList.find(p => p.id === primaryProvider)?.icon || '🌋' }}</span>
+        <span class="text-[10px] font-bold text-slate-300 font-mono">
           {{ currentUsage?.provider_name?.split(' ')[0] || allProvidersList.find(p => p.id === primaryProvider)?.name || 'Ark' }}
         </span>
-      </div>
+      </button>
 
       <!-- Center: Progress & Usage -->
       <div class="flex-1 mx-2 flex flex-col justify-center space-y-0.5 pointer-events-none">
@@ -575,7 +507,7 @@ onUnmounted(() => {
       </div>
 
       <!-- Right: Mini Actions -->
-      <div class="flex items-center space-x-0.5 shrink-0">
+      <div class="flex items-center space-x-0.5 shrink-0 pointer-events-auto">
         <button
           @click.stop="fetchUsage"
           :disabled="isRefreshing"

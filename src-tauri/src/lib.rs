@@ -8,6 +8,7 @@ mod provider_grok;
 mod provider_codex;
 mod token_store;
 mod provider_manager;
+mod usage_cache;
 
 use tauri::Manager;
 use tauri_plugin_positioner::{Position, WindowExt};
@@ -28,11 +29,16 @@ pub fn run() {
             // Initialize Menu Bar Tray
             tray::setup_tray(app.handle())?;
 
-            // Hide window when clicking outside (loss of focus)
+            // Hide window when clicking outside (loss of focus).
+            // Ignore blur for a short window after tray-clicks so the popover
+            // does not hide itself while macOS is still delivering the click.
             if let Some(window) = app.get_webview_window("main") {
                 let win_clone = window.clone();
                 window.on_window_event(move |event| {
                     if let tauri::WindowEvent::Focused(false) = event {
+                        if crate::tray::IGNORE_UNFOCUS_HIDE.load(std::sync::atomic::Ordering::SeqCst) {
+                            return;
+                        }
                         let _ = win_clone.hide();
                     }
                 });
@@ -52,8 +58,13 @@ pub fn run() {
                     }
                 }
 
+                crate::tray::IGNORE_UNFOCUS_HIDE.store(true, std::sync::atomic::Ordering::SeqCst);
                 let _ = window.show();
                 let _ = window.set_focus();
+                std::thread::spawn(|| {
+                    std::thread::sleep(std::time::Duration::from_millis(600));
+                    crate::tray::IGNORE_UNFOCUS_HIDE.store(false, std::sync::atomic::Ordering::SeqCst);
+                });
             }
 
             Ok(())
@@ -68,6 +79,7 @@ pub fn run() {
             ark_cli::check_for_updates,
             updater::install_app_update,
             provider_manager::get_unified_usage,
+            provider_manager::peek_cached_usage,
             provider_manager::get_all_providers_usage,
             provider_manager::set_provider_token,
             provider_manager::read_provider_token,

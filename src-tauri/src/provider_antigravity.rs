@@ -1,43 +1,55 @@
 use std::env;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use serde_json::Value;
 use crate::env_resolver::execute_cmd;
 use crate::provider_models::{
     ProviderAccountInfo, ProviderPlanGroup, ProviderQuotaPeriod, ProviderUsageData,
 };
+use crate::usage_cache::UsageCache;
 
-static AGY_CACHE: Mutex<Option<(Instant, ProviderUsageData)>> = Mutex::new(None);
+static AGY_CACHE: UsageCache = UsageCache::new();
+static AGY_CMD: Mutex<Option<String>> = Mutex::new(None);
 
 fn resolve_agy_command() -> String {
-    // 1. Check if "agy" in PATH
-    if let Ok(output) = execute_cmd("agy", &["--version"]) {
-        if output.status.success() {
-            return "agy".to_string();
+    if let Ok(guard) = AGY_CMD.lock() {
+        if let Some(ref cmd) = *guard {
+            return cmd.clone();
         }
     }
 
-    // 2. Check ~/.local/bin/agy
-    if let Ok(home) = env::var("HOME") {
-        let p = PathBuf::from(home).join(".local/bin/agy");
-        if p.exists() {
-            return p.to_string_lossy().to_string();
+    let resolved = {
+        if let Ok(home) = env::var("HOME") {
+            let p = PathBuf::from(&home).join(".local/bin/agy");
+            if p.exists() {
+                p.to_string_lossy().to_string()
+            } else {
+                "agy".to_string()
+            }
+        } else {
+            "agy".to_string()
         }
-    }
+    };
 
-    // 3. Check Windows LocalAppData
     #[cfg(target_os = "windows")]
-    {
+    let resolved = {
         if let Ok(localappdata) = env::var("LOCALAPPDATA") {
             let p = PathBuf::from(localappdata).join("Programs").join("agy").join("agy.exe");
             if p.exists() {
-                return p.to_string_lossy().to_string();
+                p.to_string_lossy().to_string()
+            } else {
+                resolved
             }
+        } else {
+            resolved
         }
-    }
+    };
 
-    "agy".to_string()
+    if let Ok(mut guard) = AGY_CMD.lock() {
+        *guard = Some(resolved.clone());
+    }
+    resolved
 }
 
 fn get_active_google_email() -> Option<String> {
@@ -67,15 +79,29 @@ fn get_active_google_email() -> Option<String> {
 }
 
 pub fn get_antigravity_usage() -> ProviderUsageData {
-    // 1. Return in-memory cache if fresh (< 90 seconds) to ensure 0ms instant tab switching
-    if let Ok(guard) = AGY_CACHE.lock() {
-        if let Some((cached_at, ref data)) = *guard {
-            if cached_at.elapsed() < Duration::from_secs(90) {
-                return data.clone();
-            }
+    if let Some(fresh) = AGY_CACHE.get_fresh(Duration::from_secs(90)) {
+        return fresh;
+    }
+    if let Some(stale) = AGY_CACHE.get_stale(Duration::from_secs(15 * 60)) {
+        if AGY_CACHE.begin_refresh() {
+            std::thread::spawn(|| {
+                let data = fetch_antigravity_usage_uncached();
+                AGY_CACHE.set(data);
+            });
         }
+        return stale;
     }
 
+    let data = fetch_antigravity_usage_uncached();
+    AGY_CACHE.set(data.clone());
+    data
+}
+
+pub fn peek_antigravity_usage() -> Option<ProviderUsageData> {
+    AGY_CACHE.peek()
+}
+
+fn fetch_antigravity_usage_uncached() -> ProviderUsageData {
     let cmd = resolve_agy_command();
     let email = get_active_google_email();
 
@@ -229,9 +255,6 @@ pub fn get_antigravity_usage() -> ProviderUsageData {
         console_url: Some("https://antigravity.google".to_string()),
     };
 
-    if let Ok(mut guard) = AGY_CACHE.lock() {
-        *guard = Some((Instant::now(), result.clone()));
-    }
-
+    AGY_CACHE.set(result.clone());
     result
 }

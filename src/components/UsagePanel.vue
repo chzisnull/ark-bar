@@ -109,7 +109,7 @@ function formatDetailedReset(dateStr?: string): string {
           v-for="item in providerList"
           :key="item.id"
           @click="$emit('switch-provider', item.id)"
-          class="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition duration-150"
+          class="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-colors duration-100"
           :class="[
             activeProvider === item.id
               ? 'bg-gradient-to-r from-indigo-600/90 to-violet-600/90 text-white shadow-sm shadow-indigo-500/25'

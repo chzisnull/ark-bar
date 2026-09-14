@@ -2,12 +2,14 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use crate::env_resolver::execute_cmd;
+use crate::env_resolver::{execute_cmd, invalidate_arkcli_cache};
 use crate::provider_models::{
     ProviderAccountInfo, ProviderPlanGroup, ProviderQuotaPeriod, ProviderUsageData,
 };
+use crate::usage_cache::UsageCache;
 
-static VOLC_CACHE: Mutex<Option<(Instant, ProviderUsageData)>> = Mutex::new(None);
+static VOLC_CACHE: UsageCache = UsageCache::new();
+static ENV_CACHE: Mutex<Option<(Instant, EnvironmentStatus)>> = Mutex::new(None);
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct EnvironmentStatus {
@@ -43,6 +45,14 @@ pub struct UpdateInfo {
 
 #[tauri::command]
 pub fn check_environment() -> EnvironmentStatus {
+    if let Ok(guard) = ENV_CACHE.lock() {
+        if let Some((cached_at, ref status)) = *guard {
+            if cached_at.elapsed() < Duration::from_secs(45) {
+                return status.clone();
+            }
+        }
+    }
+
     let mut status = EnvironmentStatus {
         has_node: false,
         node_version: None,
@@ -115,6 +125,10 @@ pub fn check_environment() -> EnvironmentStatus {
         }
     }
 
+    if let Ok(mut guard) = ENV_CACHE.lock() {
+        *guard = Some((Instant::now(), status.clone()));
+    }
+
     status
 }
 
@@ -125,6 +139,10 @@ pub fn install_arkcli() -> CommandResult {
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
             if output.status.success() {
+                invalidate_arkcli_cache();
+                if let Ok(mut guard) = ENV_CACHE.lock() {
+                    *guard = None;
+                }
                 CommandResult {
                     success: true,
                     message: "arkcli 安装成功".to_string(),
@@ -294,7 +312,17 @@ pub struct VolcSeatMilestones {
     pub monthly_usage: Option<f64>,
 }
 
+static SEAT_CACHE: Mutex<Option<(Instant, VolcSeatMilestones)>> = Mutex::new(None);
+
 pub fn query_volc_seat_usage(known_seat_id: Option<&str>) -> Option<VolcSeatMilestones> {
+    if let Ok(guard) = SEAT_CACHE.lock() {
+        if let Some((cached_at, ref data)) = *guard {
+            if cached_at.elapsed() < Duration::from_secs(10 * 60) {
+                return Some(data.clone());
+            }
+        }
+    }
+
     // 1. Identify SeatID: use known_seat_id or query usage.get_seat_info
     let seat_id = if let Some(sid) = known_seat_id.filter(|s| !s.trim().is_empty()) {
         sid.to_string()
@@ -346,7 +374,7 @@ pub fn query_volc_seat_usage(known_seat_id: Option<&str>) -> Option<VolcSeatMile
     let weekly_usage = result.get("WeeklyUsage").and_then(|v| v.as_f64());
     let monthly_usage = result.get("MonthlyUsage").and_then(|v| v.as_f64());
 
-    Some(VolcSeatMilestones {
+    let milestones = VolcSeatMilestones {
         seat_id: if !seat_id.is_empty() { Some(seat_id) } else { None },
         short_term_reset,
         weekly_reset,
@@ -354,20 +382,42 @@ pub fn query_volc_seat_usage(known_seat_id: Option<&str>) -> Option<VolcSeatMile
         short_term_usage,
         weekly_usage,
         monthly_usage,
-    })
+    };
+
+    if let Ok(mut guard) = SEAT_CACHE.lock() {
+        *guard = Some((Instant::now(), milestones.clone()));
+    }
+
+    Some(milestones)
 }
 
 pub fn get_volcengine_usage() -> ProviderUsageData {
-    // 0. Return memory cached data if within 60s TTL for instant rendering
-    if let Ok(guard) = VOLC_CACHE.lock() {
-        if let Some((cached_at, ref data)) = *guard {
-            if cached_at.elapsed() < Duration::from_secs(60) {
-                return data.clone();
-            }
+    if let Some(fresh) = VOLC_CACHE.get_fresh(Duration::from_secs(90)) {
+        return fresh;
+    }
+    if let Some(stale) = VOLC_CACHE.get_stale(Duration::from_secs(15 * 60)) {
+        if VOLC_CACHE.begin_refresh() {
+            std::thread::spawn(|| {
+                let data = fetch_volcengine_usage_uncached();
+                VOLC_CACHE.set(data);
+                VOLC_CACHE.end_refresh();
+            });
         }
+        return stale;
     }
 
-    // 1. Query usage plan
+    let data = fetch_volcengine_usage_uncached();
+    VOLC_CACHE.set(data.clone());
+    data
+}
+
+pub fn peek_volcengine_usage() -> Option<ProviderUsageData> {
+    VOLC_CACHE.peek()
+}
+
+fn fetch_volcengine_usage_uncached() -> ProviderUsageData {
+    // 1. Query usage plan (single arkcli spawn). Seat milestones are overlaid
+    // from a 10-minute cache so we do not pay 2-3 Node CLI cold starts per click.
     match get_usage_plan() {
         Ok(json_val) => {
             let mut groups = Vec::new();
@@ -381,8 +431,23 @@ pub fn get_volcengine_usage() -> ProviderUsageData {
                 .and_then(|item| item.get("seat_id"))
                 .and_then(|s| s.as_str());
 
-            // Query high-precision seat milestones (5h, weekly, monthly reset timestamps)
-            let seat_milestones = query_volc_seat_usage(known_seat);
+            // Overlay seat milestones only when already cached. A cold seat
+            // lookup is another Node CLI spawn — do it in the background.
+            let seat_milestones = SEAT_CACHE.lock().ok().and_then(|guard| {
+                guard.as_ref().and_then(|(cached_at, data)| {
+                    if cached_at.elapsed() < Duration::from_secs(10 * 60) {
+                        Some(data.clone())
+                    } else {
+                        None
+                    }
+                })
+            });
+            if seat_milestones.is_none() {
+                let seat_owned = known_seat.map(|s| s.to_string());
+                std::thread::spawn(move || {
+                    let _ = query_volc_seat_usage(seat_owned.as_deref());
+                });
+            }
 
             if let Some(items) = json_val.get("items").and_then(|i| i.as_array()) {
                 for item in items {
@@ -484,10 +549,7 @@ pub fn get_volcengine_usage() -> ProviderUsageData {
                 console_url: Some("https://console.volcengine.com/ark/region:cn-beijing/subscription/coding-plan-enterprise".to_string()),
             };
 
-            if let Ok(mut guard) = VOLC_CACHE.lock() {
-                *guard = Some((Instant::now(), result.clone()));
-            }
-
+            VOLC_CACHE.set(result.clone());
             result
         }
         Err(e) => {
@@ -554,10 +616,7 @@ pub fn get_volcengine_usage() -> ProviderUsageData {
                     console_url: Some("https://console.volcengine.com/ark/region:cn-beijing/subscription/coding-plan-enterprise".to_string()),
                 };
 
-                if let Ok(mut guard) = VOLC_CACHE.lock() {
-                    *guard = Some((Instant::now(), result.clone()));
-                }
-
+                VOLC_CACHE.set(result.clone());
                 return result;
             }
 

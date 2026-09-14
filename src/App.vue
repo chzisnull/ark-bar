@@ -104,20 +104,18 @@ async function fetchProviderUsage(provider: ProviderType, silent = false) {
 function handleSwitchProvider(provider: ProviderType) {
   activeProvider.value = provider;
   localStorage.setItem('arkbar_active_provider', provider);
-  // 顶部菜单栏固定展示 5 小时用量，切换主卡片 Tab 不影响菜单栏标题
-  // 0ms instant switch: if data already exists in memory/cache, render immediately without blocking UI
-  const hasData = !!providersData.value[provider];
-  fetchProviderUsage(provider, hasData);
+  // Never block the tab switch. Cached rows render immediately; network
+  // refresh always runs silently in the background.
+  fetchProviderUsage(provider, true);
 }
 
-// Background prefetch remaining providers to guarantee 0ms instant tab switching
-async function prefetchOtherProviders() {
+function prefetchOtherProviders() {
   const allProviders: ProviderType[] = ['volcengine', 'antigravity', 'grok', 'codex'];
-  for (const p of allProviders) {
-    if (p !== activeProvider.value) {
-      await fetchProviderUsage(p, true);
-    }
-  }
+  void Promise.all(
+    allProviders
+      .filter((p) => p !== activeProvider.value)
+      .map((p) => fetchProviderUsage(p, true))
+  );
 }
 
 function handleGoAuth(provider: ProviderType) {
@@ -156,7 +154,7 @@ function setupTimer() {
   if (refreshInterval.value > 0) {
     timer = setInterval(() => {
       if (currentView.value === 'panel') {
-        fetchProviderUsage(activeProvider.value);
+        fetchProviderUsage(activeProvider.value, true);
       }
     }, refreshInterval.value * 60 * 1000);
   }
@@ -191,42 +189,31 @@ async function handleOnboardingComplete() {
   await fetchProviderUsage('volcengine');
 }
 
-function handleWindowBlur() {
-  if (!isFloatWindow.value) {
-    invoke('hide_window').catch(() => {});
-  }
-}
-
 onMounted(() => {
-  if (!isFloatWindow.value) {
-    window.addEventListener('blur', handleWindowBlur);
+  // The float webview must stay a cheap renderer. All CLI/network work
+  // belongs to the main window so tray clicks are not fighting a second
+  // copy of arkcli / curl / agy.
+  if (isFloatWindow.value) {
+    return;
   }
 
-  // 1. Instantly update tray title from cached data (0ms)
   updateTrayTitle();
 
-  // 2. Fetch active provider (silent if we already loaded from local cache)
   const hasCached = !!providersData.value[activeProvider.value];
   fetchProviderUsage(activeProvider.value, hasCached);
 
-  // 3. Setup timer
   setupTimer();
 
-  // 4. Background prefetch remaining providers after 1.2s to guarantee 0ms instant tab switching
   setTimeout(() => {
     prefetchOtherProviders();
-  }, 1200);
+  }, 2500);
 
-  // 5. Deferred non-critical tasks: check auto-updates after 4s idle to avoid startup CPU/network contention
   setTimeout(() => {
     checkAutoUpdate();
-  }, 4000);
+  }, 8000);
 });
 
 onUnmounted(() => {
-  if (!isFloatWindow.value) {
-    window.removeEventListener('blur', handleWindowBlur);
-  }
   if (timer) clearInterval(timer);
 });
 </script>

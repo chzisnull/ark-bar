@@ -1,9 +1,15 @@
 use std::env;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+use std::sync::{Mutex, Once};
+use std::time::{Duration, Instant};
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+
+static PATH_INIT: Once = Once::new();
+static ARKCLI_BIN: Mutex<Option<Option<PathBuf>>> = Mutex::new(None);
 
 pub fn refresh_effective_path() {
     let current_path = env::var("PATH").unwrap_or_default();
@@ -107,7 +113,23 @@ pub fn refresh_effective_path() {
 }
 
 pub fn init_effective_path() {
-    refresh_effective_path();
+    PATH_INIT.call_once(|| {
+        refresh_effective_path();
+    });
+}
+
+pub fn invalidate_arkcli_cache() {
+    if let Ok(mut guard) = ARKCLI_BIN.lock() {
+        *guard = None;
+    }
+}
+
+fn cached_arkcli_binary() -> Option<PathBuf> {
+    let mut guard = ARKCLI_BIN.lock().ok()?;
+    if guard.is_none() {
+        *guard = Some(find_arkcli_binary());
+    }
+    guard.clone().flatten()
 }
 
 pub fn find_arkcli_binary() -> Option<PathBuf> {
@@ -188,14 +210,12 @@ pub fn find_arkcli_binary() -> Option<PathBuf> {
 }
 
 pub fn create_command(cmd: &str) -> Command {
-    refresh_effective_path();
+    init_effective_path();
 
     let target_cmd = if cmd == "arkcli" {
-        if let Some(bin) = find_arkcli_binary() {
-            bin.to_string_lossy().to_string()
-        } else {
-            cmd.to_string()
-        }
+        cached_arkcli_binary()
+            .map(|bin| bin.to_string_lossy().to_string())
+            .unwrap_or_else(|| cmd.to_string())
     } else {
         cmd.to_string()
     };
@@ -217,12 +237,61 @@ pub fn create_command(cmd: &str) -> Command {
 }
 
 pub fn execute_cmd(cmd: &str, args: &[&str]) -> Result<Output, String> {
+    execute_cmd_timeout(cmd, args, Duration::from_secs(8))
+}
+
+pub fn execute_cmd_timeout(cmd: &str, args: &[&str], timeout: Duration) -> Result<Output, String> {
     let mut command = create_command(cmd);
     command.args(args);
     command
         .env("ARKCLI_NO_UPDATE_NOTIFIER", "1")
-        .output()
-        .map_err(|e| format!("无法执行命令 '{}': {}", cmd, e))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("无法执行命令 '{}': {}", cmd, e))?;
+
+    let mut stdout_pipe = child.stdout.take();
+    let mut stderr_pipe = child.stderr.take();
+    let stdout_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(ref mut pipe) = stdout_pipe {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let stderr_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(ref mut pipe) = stderr_pipe {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    });
+
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let stdout = stdout_thread.join().unwrap_or_default();
+                let stderr = stderr_thread.join().unwrap_or_default();
+                return Ok(Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
+            }
+            Ok(None) => {
+                if started.elapsed() > timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("命令 '{}' 超时 ({}s)", cmd, timeout.as_secs()));
+                }
+                std::thread::sleep(Duration::from_millis(15));
+            }
+            Err(e) => return Err(format!("等待命令 '{}' 失败: {}", cmd, e)),
+        }
+    }
 }
 
 #[cfg(test)]
