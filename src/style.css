@@ -10,9 +10,31 @@ html, body, #app {
   overflow: hidden;
   user-select: none;
   -webkit-user-select: none;
+  cursor: default !important;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   background-color: transparent !important;
   background: transparent !important;
+}
+
+@keyframes arkbar-indet {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(420%); }
+}
+.arkbar-indet {
+  animation: arkbar-indet 1.15s ease-in-out infinite;
+}
+
+.panel-fade-enter-active,
+.panel-fade-leave-active {
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.panel-fade-enter-from {
+  opacity: 0;
+  transform: translateY(8px);
+}
+.panel-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
 }
 
 /* Custom subtle scrollbar */

@@ -44,7 +44,25 @@ pub struct UpdateInfo {
 }
 
 #[tauri::command]
-pub fn check_environment() -> EnvironmentStatus {
+pub async fn check_environment() -> EnvironmentStatus {
+    tauri::async_runtime::spawn_blocking(check_environment_sync)
+        .await
+        .unwrap_or_else(|_| EnvironmentStatus {
+            has_node: false,
+            node_version: None,
+            has_npm: false,
+            npm_version: None,
+            has_arkcli: false,
+            arkcli_version: None,
+            logged_in: false,
+            user_name: None,
+            account_id: None,
+            active_profile: None,
+            error_message: Some("环境检测任务失败".to_string()),
+        })
+}
+
+fn check_environment_sync() -> EnvironmentStatus {
     if let Ok(guard) = ENV_CACHE.lock() {
         if let Some((cached_at, ref status)) = *guard {
             if cached_at.elapsed() < Duration::from_secs(45) {
@@ -361,10 +379,16 @@ fn query_volc_seat_usage_cached(known_seat_id: Option<&str>, force: bool) -> Opt
     let json_val = serde_json::from_str::<Value>(&stdout).ok()?;
     let result = json_val.get("Result")?;
 
+    // API returns -1 when the 5-hour window has not started (0% used).
     let short_term_reset = result.get("ShortTermResetMilestone")
         .and_then(|v| v.as_i64())
-        .filter(|&ts| ts > 0)
-        .map(unix_to_iso8601);
+        .and_then(|ts| {
+            if ts > 0 {
+                Some(unix_to_iso8601(ts))
+            } else {
+                Some("rolling-5h".to_string())
+            }
+        });
 
     let weekly_reset = result.get("WeeklyResetMilestone")
         .and_then(|v| v.as_i64())
@@ -449,6 +473,9 @@ fn fetch_volcengine_usage_uncached(force: bool) -> ProviderUsageData {
                                         if let Some(u) = m.short_term_usage {
                                             percent = u;
                                         }
+                                    }
+                                    if reset_at.is_none() {
+                                        reset_at = Some("rolling-5h".to_string());
                                     }
                                     "近5小时用量".to_string()
                                 }
@@ -596,7 +623,7 @@ fn fetch_volcengine_usage_uncached(force: bool) -> ProviderUsageData {
             }
 
             // Slow diagnostic path: only check environment when usage plan fails
-            let env_status = check_environment();
+            let env_status = check_environment_sync();
             let status_msg = if !env_status.has_arkcli {
                 "未检测到 arkcli 命令行工具".to_string()
             } else if !env_status.logged_in {

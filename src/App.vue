@@ -14,6 +14,12 @@ const currentView = ref<'onboarding' | 'panel' | 'settings'>('panel');
 const envStatus = ref<EnvironmentStatus | null>(null);
 const updateInfo = ref<UpdateInfo | null>(null);
 const isRefreshing = ref(false);
+const loadingMap = ref<Record<ProviderType, boolean>>({
+  volcengine: false,
+  antigravity: false,
+  grok: false,
+  codex: false,
+});
 
 const activeProvider = ref<ProviderType>(
   (localStorage.getItem('arkbar_active_provider') as ProviderType) || 'volcengine'
@@ -75,10 +81,8 @@ const inFlight = new Set<ProviderType>();
 // Fetch provider usage: supports silent background refresh to avoid UI freezes
 async function fetchProviderUsage(provider: ProviderType, silent = false, force = false) {
   if (inFlight.has(provider) && !force) return;
-  if (inFlight.has(provider) && force) {
-    // Allow a forced refresh to proceed after the in-flight call finishes.
-  }
   inFlight.add(provider);
+  loadingMap.value[provider] = true;
 
   if (!silent) {
     isRefreshing.value = true;
@@ -99,6 +103,7 @@ async function fetchProviderUsage(provider: ProviderType, silent = false, force 
     console.error(`Failed to fetch ${provider} usage:`, err);
   } finally {
     inFlight.delete(provider);
+    loadingMap.value[provider] = false;
     if (!silent) {
       isRefreshing.value = false;
     }
@@ -193,9 +198,13 @@ async function handleOnboardingComplete() {
   await fetchProviderUsage('volcengine');
 }
 
+let lastVisibleRefresh = 0;
 function onPanelBecomeVisible() {
   if (isFloatWindow.value) return;
-  fetchProviderUsage(activeProvider.value, true, true);
+  const now = Date.now();
+  if (now - lastVisibleRefresh < 20000) return;
+  lastVisibleRefresh = now;
+  fetchProviderUsage(activeProvider.value, true, false);
 }
 
 onMounted(() => {
@@ -209,7 +218,7 @@ onMounted(() => {
   updateTrayTitle();
 
   const hasCached = !!providersData.value[activeProvider.value];
-  fetchProviderUsage(activeProvider.value, hasCached, true);
+  fetchProviderUsage(activeProvider.value, hasCached, !hasCached);
 
   setupTimer();
 
@@ -257,6 +266,7 @@ onUnmounted(() => {
       :providers-data="providersData"
       :active-provider="activeProvider"
       :is-refreshing="isRefreshing"
+      :loading-map="loadingMap"
       :update-info="updateInfo"
       @switch-provider="handleSwitchProvider"
       @refresh="handleRefreshCurrent"

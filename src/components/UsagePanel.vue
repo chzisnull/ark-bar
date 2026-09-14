@@ -9,6 +9,7 @@ const props = defineProps<{
   providersData: Record<ProviderType, ProviderUsageData | null>;
   activeProvider: ProviderType;
   isRefreshing: boolean;
+  loadingMap?: Record<ProviderType, boolean>;
   updateInfo?: UpdateInfo | null;
 }>();
 
@@ -31,6 +32,10 @@ const providerList: { id: ProviderType; name: string; icon: string }[] = [
 
 const currentUsage = computed<ProviderUsageData | null>(() => {
   return props.providersData[props.activeProvider] || null;
+});
+
+const isProviderLoading = computed(() => {
+  return !!props.loadingMap?.[props.activeProvider] || props.isRefreshing;
 });
 
 function getBarColor(percent: number): string {
@@ -57,6 +62,9 @@ function parseResetTime(dateStr?: string): number | null {
 }
 
 function formatExactTime(dateStr?: string): string {
+  if (dateStr === 'rolling-5h') {
+    return '5小时滚动窗口：产生用量后开始倒计时';
+  }
   const target = parseResetTime(dateStr);
   if (!target) return dateStr || '';
   const d = new Date(target);
@@ -69,6 +77,7 @@ function formatExactTime(dateStr?: string): string {
 }
 
 function formatDetailedReset(dateStr?: string): string {
+  if (dateStr === 'rolling-5h') return '使用后开始计时';
   const target = parseResetTime(dateStr);
   if (!target) return dateStr || '';
   const now = Date.now();
@@ -100,7 +109,14 @@ function formatDetailedReset(dateStr?: string): string {
 </script>
 
 <template>
-  <div class="flex flex-col h-full select-none text-slate-200 bg-[#0e131f]/95">
+  <div class="flex flex-col h-full select-none text-slate-200 bg-[#0e131f]/95 relative">
+    <div
+      v-if="isProviderLoading"
+      class="absolute top-0 left-0 right-0 h-[2px] overflow-hidden z-20 bg-indigo-500/20"
+    >
+      <div class="h-full w-1/3 rounded-full bg-gradient-to-r from-indigo-400 via-violet-400 to-cyan-300 arkbar-indet"></div>
+    </div>
+
     <!-- Top Navigation Header -->
     <div class="px-3.5 py-2.5 bg-[#141b2d]/90 border-b border-slate-800/80 flex items-center justify-between gap-2">
       <!-- Provider Tabs Segmented Bar -->
@@ -118,8 +134,12 @@ function formatDetailedReset(dateStr?: string): string {
         >
           <span class="text-xs">{{ item.icon }}</span>
           <span class="text-[11px] whitespace-nowrap">{{ item.name }}</span>
-          <!-- Live connection indicator dot -->
+          <RefreshCw
+            v-if="loadingMap?.[item.id]"
+            class="w-2.5 h-2.5 animate-spin text-indigo-300"
+          />
           <span
+            v-else
             class="w-1.5 h-1.5 rounded-full"
             :class="[
               props.providersData[item.id]?.is_connected
@@ -138,7 +158,7 @@ function formatDetailedReset(dateStr?: string): string {
           class="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800/80 transition"
           title="刷新数据"
         >
-          <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': isRefreshing }" />
+          <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': isProviderLoading }" />
         </button>
         <button
           @click="$emit('open-settings')"
@@ -179,8 +199,8 @@ function formatDetailedReset(dateStr?: string): string {
 
     <!-- Main Content Area -->
     <div class="p-3.5 flex-1 overflow-y-auto space-y-3">
-      <!-- 0. Initial Loading Skeleton View (when fetching first time) -->
-      <div v-if="!currentUsage && isRefreshing" class="p-4 bg-[#131a2a]/40 border border-slate-800/60 rounded-xl space-y-3 my-1 animate-pulse">
+      <Transition name="panel-fade" mode="out-in">
+      <div v-if="!currentUsage && isProviderLoading" key="loading-skel" class="p-4 bg-[#131a2a]/40 border border-slate-800/60 rounded-xl space-y-3 my-1 animate-pulse">
         <div class="flex items-center justify-between">
           <div class="h-4 bg-slate-800 rounded w-24"></div>
           <div class="h-4 bg-slate-800 rounded w-16"></div>
@@ -194,7 +214,16 @@ function formatDetailedReset(dateStr?: string): string {
       </div>
 
       <!-- 1. Connected State View -->
-      <div v-else-if="currentUsage?.is_connected" class="space-y-3">
+      <div v-else-if="currentUsage?.is_connected" :key="activeProvider + '-on'" class="space-y-3 relative">
+        <div
+          v-if="isProviderLoading"
+          class="absolute inset-0 z-10 rounded-xl bg-[#0e131f]/25 backdrop-blur-[1px] flex items-start justify-end p-2 pointer-events-none"
+        >
+          <span class="text-[10px] text-indigo-200 bg-indigo-500/20 border border-indigo-400/30 px-2 py-0.5 rounded-full flex items-center gap-1">
+            <RefreshCw class="w-2.5 h-2.5 animate-spin" />
+            同步中
+          </span>
+        </div>
         <!-- Provider Info Header Badge -->
         <div class="flex items-center justify-between bg-[#131a2a]/60 px-3 py-2 rounded-xl border border-slate-800/60">
           <div class="flex items-center gap-2">
@@ -276,7 +305,7 @@ function formatDetailedReset(dateStr?: string): string {
       </div>
 
       <!-- 2. Unconnected State View -->
-      <div v-else class="p-4 bg-[#131a2a]/80 border border-slate-800/80 rounded-xl text-center space-y-3.5 my-2">
+      <div v-else :key="activeProvider + '-off'" class="p-4 bg-[#131a2a]/80 border border-slate-800/80 rounded-xl text-center space-y-3.5 my-2">
         <div class="w-12 h-12 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-2xl mx-auto shadow-inner">
           {{ currentUsage?.icon || '⚙️' }}
         </div>
@@ -300,11 +329,12 @@ function formatDetailedReset(dateStr?: string): string {
             :disabled="isRefreshing"
             class="w-full py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-medium flex items-center justify-center gap-1 transition cursor-pointer"
           >
-            <RefreshCw class="w-3 h-3" :class="{ 'animate-spin': isRefreshing }" />
+            <RefreshCw class="w-3 h-3" :class="{ 'animate-spin': isProviderLoading }" />
             <span>重新检测状态</span>
           </button>
         </div>
       </div>
+      </Transition>
     </div>
 
     <!-- In-App Online Update Modal -->

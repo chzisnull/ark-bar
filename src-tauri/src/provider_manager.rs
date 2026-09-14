@@ -7,20 +7,24 @@ use crate::provider_models::ProviderUsageData;
 use crate::token_store::{get_token, save_token};
 
 #[tauri::command]
-pub fn get_unified_usage(
+pub async fn get_unified_usage(
     provider: String,
     custom_token: Option<String>,
     force: Option<bool>,
 ) -> Result<ProviderUsageData, String> {
-    let force = force.unwrap_or(false);
-    let token = custom_token.or_else(|| get_token(&provider));
-    match provider.as_str() {
-        "volcengine" => Ok(get_volcengine_usage_forced(force)),
-        "antigravity" => Ok(get_antigravity_usage_forced(force)),
-        "grok" => Ok(get_grok_usage_forced(token.as_deref(), force)),
-        "codex" => Ok(get_codex_usage_forced(token.as_deref(), force)),
-        unknown => Err(format!("未知的服务商: {}", unknown)),
-    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let force = force.unwrap_or(false);
+        let token = custom_token.or_else(|| get_token(&provider));
+        match provider.as_str() {
+            "volcengine" => Ok(get_volcengine_usage_forced(force)),
+            "antigravity" => Ok(get_antigravity_usage_forced(force)),
+            "grok" => Ok(get_grok_usage_forced(token.as_deref(), force)),
+            "codex" => Ok(get_codex_usage_forced(token.as_deref(), force)),
+            unknown => Err(format!("未知的服务商: {}", unknown)),
+        }
+    })
+    .await
+    .map_err(|e| format!("用量查询任务失败: {}", e))?
 }
 
 #[tauri::command]
