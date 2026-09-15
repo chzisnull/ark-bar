@@ -23,6 +23,23 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_autostart::Builder::new().build())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    // 菜单栏图标被系统挤掉或被用户隐藏时，快捷键是常驻入口；
+                    // 行为与托盘左键一致：显则隐、隐则显
+                    if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        if let Some(window) = app.get_webview_window("main") {
+                            if window.is_visible().unwrap_or(false) {
+                                let _ = window.hide();
+                            } else {
+                                let _ = tray::show_main_window(app.clone());
+                            }
+                        }
+                    }
+                })
+                .build(),
+        )
         .setup(|app| {
             // Set macOS activation policy to Accessory so it doesn't show in Dock
             #[cfg(target_os = "macos")]
@@ -51,6 +68,16 @@ pub fn run() {
             // Native periodic usage sync (webview timers are suspended while
             // the popover window is hidden).
             background::spawn(app.handle().clone());
+
+            // 全局快捷键 ⌘/Ctrl+Shift+A 呼出主面板。注册失败（如与其他应用
+            // 冲突）只降级不崩溃：悬浮窗右键菜单仍是兜底入口。
+            #[cfg(desktop)]
+            {
+                use tauri_plugin_global_shortcut::GlobalShortcutExt;
+                if let Err(e) = app.global_shortcut().register("CommandOrControl+Shift+A") {
+                    eprintln!("注册全局快捷键失败: {e}");
+                }
+            }
 
             // Hide window when clicking outside (loss of focus).
             // Ignore blur for a short window after tray-clicks so the popover
@@ -109,6 +136,7 @@ pub fn run() {
             provider_manager::set_provider_token,
             provider_manager::read_provider_token,
             tray::update_tray_title,
+            tray::set_tray_icon_visible,
             tray::show_main_window,
             tray::hide_window,
             tray::open_float_window,

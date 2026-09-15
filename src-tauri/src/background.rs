@@ -4,7 +4,7 @@
 // 至挂起整个进程），Windows 的 WebView2 对隐藏窗口同样节流，导致设置
 // 里的"后台自动检测频率"从不生效，托盘数字与面板数据只有点击托盘后才
 // 刷新。改由 Rust 原生线程负责周期刷新，窗口隐藏时照常工作。
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -18,8 +18,9 @@ use crate::tray;
 static INTERVAL_MINUTES: AtomicU64 = AtomicU64::new(5);
 /// 托盘标题跟随的厂商 id（"volcengine" | "grok" | ... | "auto"）。
 static TRAY_TARGET: Mutex<String> = Mutex::new(String::new());
-/// 是否在菜单栏显示百分比。
-static TRAY_SHOW_PERCENT: AtomicBool = AtomicBool::new(true);
+/// 菜单栏百分比显示模式：0=始终显示；1=仅告警(≥75%或断连)时显示；
+/// 2=纯图标。与 App.vue 的 computeTrayTitle 语义保持一致。
+static TRAY_PERCENT_MODE: AtomicU8 = AtomicU8::new(0);
 /// 前端是否已把用户偏好同步过来。在此之前不刷新也不动托盘，
 /// 避免按默认值覆盖用户的"仅手动/隐藏百分比"设置。
 static PREFS_SYNCED: AtomicBool = AtomicBool::new(false);
@@ -37,11 +38,16 @@ pub fn set_background_interval(minutes: u64) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn set_tray_prefs(target: String, show_percent: bool) -> Result<(), String> {
+pub fn set_tray_prefs(target: String, percent_mode: String) -> Result<(), String> {
     if let Ok(mut t) = TRAY_TARGET.lock() {
         *t = target;
     }
-    TRAY_SHOW_PERCENT.store(show_percent, Ordering::SeqCst);
+    let mode = match percent_mode.as_str() {
+        "alert" => 1,
+        "never" => 2,
+        _ => 0,
+    };
+    TRAY_PERCENT_MODE.store(mode, Ordering::SeqCst);
     PREFS_SYNCED.store(true, Ordering::SeqCst);
     Ok(())
 }
@@ -87,13 +93,20 @@ fn refresh_cycle(app: AppHandle) {
             t
         }
     };
-    let show_percent = TRAY_SHOW_PERCENT.load(Ordering::SeqCst);
+    let percent_mode = TRAY_PERCENT_MODE.load(Ordering::SeqCst);
 
     for data in get_all_providers_usage() {
         if data.provider == target {
-            let title = match (show_percent, data.is_connected, data.primary_session_percent) {
-                (true, true, Some(p)) => format!(" {}%", p.round() as i64),
-                _ => String::new(),
+            let title = if percent_mode == 2 {
+                String::new()
+            } else if !data.is_connected {
+                // 告警模式下断连要在菜单栏可见
+                if percent_mode == 1 { " ⚠".to_string() } else { String::new() }
+            } else {
+                match data.primary_session_percent {
+                    Some(p) if percent_mode == 0 || p >= 75.0 => format!(" {}%", p.round() as i64),
+                    _ => String::new(),
+                }
             };
             let _ = tray::update_tray_title(app.clone(), title);
         }

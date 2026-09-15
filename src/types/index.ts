@@ -68,6 +68,9 @@ export interface UpdateProgress {
 
 export type ProviderType = 'volcengine' | 'antigravity' | 'grok' | 'codex';
 
+/** 菜单栏百分比显示模式：始终显示 / 仅告警(≥75%或断连)时显示 / 纯图标 */
+export type TrayPercentMode = 'always' | 'alert' | 'never';
+
 export interface ProviderQuotaPeriod {
   label: string;
   name: string;

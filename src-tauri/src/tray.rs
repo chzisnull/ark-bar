@@ -23,7 +23,14 @@ fn arm_ignore_unfocus_hide() {
 
 fn show_main_popover(window: &WebviewWindow) {
     arm_ignore_unfocus_hide();
-    let _ = window.move_window_constrained(Position::TrayCenter);
+    // 托盘从未被点击（如图标被隐藏后直接用快捷键呼出）时 positioner
+    // 没有 TrayCenter 数据，降级到屏幕角落
+    if window.move_window_constrained(Position::TrayCenter).is_err() {
+        #[cfg(target_os = "macos")]
+        let _ = window.move_window(Position::TopRight);
+        #[cfg(not(target_os = "macos"))]
+        let _ = window.move_window(Position::BottomRight);
+    }
     let _ = window.show();
     let _ = window.set_focus();
 }
@@ -137,6 +144,29 @@ pub fn update_tray_title(app: AppHandle, title: String) -> Result<(), String> {
                 format!("ArkBar - 多模型配额监控 [{}]", trimmed)
             };
             let _ = tray.set_tooltip(Some(&tip));
+        }
+    }
+    Ok(())
+}
+
+/// 显示/隐藏菜单栏图标。隐藏后应用仍常驻运行，通过悬浮窗的恢复按钮
+/// 或全局快捷键找回（前端 localStorage 持久化，启动时由前端应用）。
+#[tauri::command]
+pub fn set_tray_icon_visible(app: AppHandle, visible: bool) -> Result<(), String> {
+    if let Some(tray) = app.tray_by_id("ark-bar-tray") {
+        tray.set_visible(visible).map_err(|e| e.to_string())?;
+        if visible {
+            // set_visible(true) 会重建状态项（macOS 新 NSStatusItem /
+            // Windows NIM_ADD），百分比标题会丢失；扰动去重键后重放上次
+            // 标题，让恢复出来的图标立即带回百分比/告警。
+            let last = LAST_TRAY_TITLE
+                .lock()
+                .map(|g| g.clone())
+                .unwrap_or_default();
+            if let Ok(mut l) = LAST_TRAY_TITLE.lock() {
+                *l = "\u{0}".to_string();
+            }
+            let _ = update_tray_title(app.clone(), last);
         }
     }
     Ok(())

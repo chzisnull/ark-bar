@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import type { EnvironmentStatus, UpdateInfo, ProviderType } from '../types';
+import type { EnvironmentStatus, UpdateInfo, ProviderType, TrayPercentMode } from '../types';
 import { ArrowLeft, RefreshCw, Download, CheckCircle2, AlertCircle, Power, ExternalLink, ChevronDown } from 'lucide-vue-next';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart';
@@ -10,7 +10,7 @@ import UpdateModal from './UpdateModal.vue';
 const props = defineProps<{
   envStatus: EnvironmentStatus | null;
   refreshInterval: number;
-  showPercentageInTray: boolean;
+  trayPercentMode: TrayPercentMode;
   initialUpdateInfo?: UpdateInfo | null;
   activeProvider: ProviderType;
 }>();
@@ -18,7 +18,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'update-interval', val: number): void;
-  (e: 'update-tray-mode', val: boolean): void;
+  (e: 'update-tray-percent-mode', val: TrayPercentMode): void;
   (e: 'update-tray-target', val: ProviderType | 'auto'): void;
   (e: 're-login'): void;
   (e: 'provider-token-updated'): void;
@@ -28,13 +28,29 @@ const isCheckingUpdate = ref(false);
 const updateResult = ref<UpdateInfo | null>(props.initialUpdateInfo || null);
 const updateError = ref('');
 const isFloatOpen = ref(false);
+// 菜单栏图标显隐；系统注册状态由前端持久化 + set_tray_icon_visible 应用
+const trayIconVisible = ref(localStorage.getItem('arkbar_tray_icon_visible') !== 'false');
+const isMac = navigator.platform.toUpperCase().includes('MAC');
+const trayHotkeyLabel = isMac ? '⌘⇧A' : 'Ctrl+Shift+A';
+
+async function toggleTrayIcon() {
+  const next = !trayIconVisible.value;
+  trayIconVisible.value = next;
+  localStorage.setItem('arkbar_tray_icon_visible', String(next));
+  try {
+    await invoke('set_tray_icon_visible', { visible: next });
+  } catch {
+    trayIconVisible.value = !next;
+    localStorage.setItem('arkbar_tray_icon_visible', String(!next));
+  }
+}
 const isAutostartEnabled = ref<boolean | null>(null);
 const isAutostartLoading = ref(false);
 const isAutostartUpdating = ref(false);
 const autostartError = ref('');
 let autostartStatusRequestId = 0;
 const showUpdateModal = ref(false);
-const appVersion = computed(() => updateResult.value?.current_version || props.initialUpdateInfo?.current_version || '0.2.11');
+const appVersion = computed(() => updateResult.value?.current_version || props.initialUpdateInfo?.current_version || '0.2.12');
 
 // Tray Target Provider selection
 const trayTarget = ref<ProviderType | 'auto'>(
@@ -338,23 +354,54 @@ onMounted(async () => {
               </div>
             </div>
           </div>
-          <!-- Tray percentage toggle -->
+          <!-- Tray icon visibility -->
           <div class="px-4 py-3 flex items-center gap-3">
             <div class="flex-1 min-w-0">
-              <p class="text-xs font-medium text-white leading-5">显示周期百分比</p>
-              <p class="text-[11px] text-slate-500 leading-4 mt-0.5 truncate">状态栏图标旁展示数字</p>
+              <p class="text-xs font-medium text-white leading-5">菜单栏图标</p>
+              <p class="text-[11px] text-slate-500 leading-4 mt-0.5 truncate">
+                {{ trayIconVisible ? '占用一个菜单栏图标位' : `已隐藏：按 ${trayHotkeyLabel} 或悬浮窗按钮恢复` }}
+              </p>
             </div>
             <div class="w-[128px] h-7 shrink-0 flex items-center justify-end">
               <button
-                @click="$emit('update-tray-mode', !showPercentageInTray)"
+                type="button"
+                @click="toggleTrayIcon"
+                :aria-pressed="trayIconVisible"
+                aria-label="显示菜单栏图标"
+                :title="trayIconVisible ? '隐藏菜单栏图标' : '显示菜单栏图标'"
                 class="w-9 h-5 rounded-full p-0.5 border transition-colors duration-200 cursor-pointer"
-                :class="showPercentageInTray ? 'bg-indigo-600 border-indigo-500' : 'bg-slate-800 border-slate-700'"
+                :class="trayIconVisible ? 'bg-indigo-600 border-indigo-500' : 'bg-slate-800 border-slate-700'"
               >
                 <div
                   class="w-3.5 h-3.5 rounded-full bg-white shadow-sm transition-transform duration-200"
-                  :class="{ 'translate-x-4': showPercentageInTray }"
+                  :class="{ 'translate-x-4': trayIconVisible }"
                 ></div>
               </button>
+            </div>
+          </div>
+          <!-- Tray percentage mode -->
+          <div class="px-4 py-3 flex items-center gap-3">
+            <div class="flex-1 min-w-0">
+              <p class="text-xs font-medium text-white leading-5">菜单栏百分比</p>
+              <p class="text-[11px] text-slate-500 leading-4 mt-0.5 truncate">
+                {{ trayIconVisible ? '仅告警档在 ≥75% 或断连时显示' : '图标已隐藏' }}
+              </p>
+            </div>
+            <div class="w-[128px] h-7 shrink-0 flex items-center justify-end">
+              <div class="relative">
+                <select
+                  :value="trayPercentMode"
+                  :disabled="!trayIconVisible"
+                  @change="$emit('update-tray-percent-mode', ($event.target as HTMLSelectElement).value as TrayPercentMode)"
+                  class="h-7 w-[104px] pl-2.5 pr-6 rounded-lg bg-slate-900/70 border border-slate-800/60 text-xs text-slate-200 truncate cursor-pointer outline-none hover:border-slate-700/60 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 appearance-none disabled:opacity-50 disabled:cursor-not-allowed"
+                  :title="trayIconVisible ? '' : '菜单栏图标已隐藏'"
+                >
+                  <option value="always">始终显示</option>
+                  <option value="alert">仅告警时</option>
+                  <option value="never">不显示</option>
+                </select>
+                <ChevronDown class="w-3 h-3 absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
+              </div>
             </div>
           </div>
         </div>

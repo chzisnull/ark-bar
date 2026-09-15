@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import type { ProviderType, ProviderUsageData } from '../types';
-import { X, RefreshCw } from 'lucide-vue-next';
+import { X, RefreshCw, PanelTop } from 'lucide-vue-next';
 
 const CACHE_KEY = 'arkbar_cached_providers_data';
 
@@ -41,6 +41,8 @@ const primaryProvider = ref<ProviderType>(
 );
 
 const isRefreshing = ref(false);
+// 菜单栏图标被隐藏时显示一键恢复按钮（存储变更经 storage 事件跨窗口同步）
+const trayIconHidden = ref(localStorage.getItem('arkbar_tray_icon_visible') === 'false');
 const isHovered = ref(false);
 const showQuickMenu = ref(false);
 let quickMenuTimer: any = null;
@@ -280,6 +282,17 @@ async function handleExitApp() {
   }
 }
 
+async function restoreTrayIcon() {
+  trayIconHidden.value = false;
+  localStorage.setItem('arkbar_tray_icon_visible', 'true');
+  try {
+    await invoke('set_tray_icon_visible', { visible: true });
+  } catch {
+    trayIconHidden.value = true;
+    localStorage.setItem('arkbar_tray_icon_visible', 'false');
+  }
+}
+
 // Storage event to sync primary provider changes from settings
 function handleStorageChange(e: StorageEvent) {
   if (e.key === 'arkbar_float_primary_provider' && e.newValue) {
@@ -290,6 +303,9 @@ function handleStorageChange(e: StorageEvent) {
     try {
       allCachedData.value = JSON.parse(e.newValue);
     } catch {}
+  }
+  if (e.key === 'arkbar_tray_icon_visible') {
+    trayIconHidden.value = e.newValue === 'false';
   }
 }
 
@@ -320,6 +336,8 @@ onMounted(() => {
   // 窗口隐藏期间事件可能丢失，重新显示/聚焦时补一次非强制刷新
   // （Rust 缓存通常已被后台线程刷新，秒回）。
   getCurrentWebviewWindow().listen('tauri://focus', () => {
+    // 窗口隐藏期间 storage 事件可能丢失，聚焦时重读图标显隐状态
+    trayIconHidden.value = localStorage.getItem('arkbar_tray_icon_visible') === 'false';
     const now = Date.now();
     if (now - lastFocusRefresh < 30000) return;
     lastFocusRefresh = now;
@@ -536,6 +554,14 @@ onUnmounted(() => {
 
       <!-- Right: Mini Actions -->
       <div class="flex items-center space-x-0.5 shrink-0 pointer-events-auto">
+        <button
+          v-if="trayIconHidden"
+          @click.stop="restoreTrayIcon"
+          class="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
+          title="恢复菜单栏图标"
+        >
+          <PanelTop class="w-2.5 h-2.5" />
+        </button>
         <button
           @click.stop="fetchUsage"
           :disabled="isRefreshing"

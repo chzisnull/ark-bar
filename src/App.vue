@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, watch, defineAsyncComponent } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { EnvironmentStatus, UpdateInfo, ProviderType, ProviderUsageData } from './types';
+import type { EnvironmentStatus, UpdateInfo, ProviderType, ProviderUsageData, TrayPercentMode } from './types';
 import UsagePanel from './components/UsagePanel.vue';
 
 // Lazy load non-critical components to minimize initial bundle parsing
@@ -30,9 +30,14 @@ const trayTarget = ref<ProviderType | 'auto'>(
   (localStorage.getItem('arkbar_tray_target') as ProviderType | 'auto') || 'volcengine'
 );
 
-const showPercentageInTray = ref<boolean>(
-  localStorage.getItem('arkbar_tray_percent') !== 'false'
-);
+// 菜单栏百分比显示模式；迁移旧布尔开关 arkbar_tray_percent
+function loadTrayPercentMode(): TrayPercentMode {
+  const stored = localStorage.getItem('arkbar_tray_percent_mode');
+  if (stored === 'always' || stored === 'alert' || stored === 'never') return stored;
+  return localStorage.getItem('arkbar_tray_percent') === 'false' ? 'never' : 'always';
+}
+
+const trayPercentMode = ref<TrayPercentMode>(loadTrayPercentMode());
 
 const refreshInterval = ref<number>(
   Number(localStorage.getItem('arkbar_refresh_interval')) || 5
@@ -139,22 +144,22 @@ async function handleRefreshCurrent() {
   await fetchProviderUsage(activeProvider.value, false, true);
 }
 
-function updateTrayTitle() {
-  if (!showPercentageInTray.value) {
-    invoke('update_tray_title', { title: '' });
-    return;
+// 托盘标题按模式计算；须与 background.rs refresh_cycle 的逻辑保持一致
+function computeTrayTitle(target: ProviderType): string {
+  if (trayPercentMode.value === 'never') return '';
+  const data = providersData.value[target] || providersData.value['volcengine'];
+  const p = data?.primary_session_percent;
+  if (trayPercentMode.value === 'alert') {
+    if (data && !data.is_connected) return ' ⚠';
+    return p != null && p >= 75 ? ` ${Math.round(p)}%` : '';
   }
+  return data?.is_connected && p != null ? ` ${Math.round(p)}%` : '';
+}
 
+function updateTrayTitle() {
   // 固定展示火山方舟 5 小时用量，不随界面 Tab 切换而变动
   const target: ProviderType = trayTarget.value === 'auto' ? 'volcengine' : trayTarget.value;
-  const data = providersData.value[target] || providersData.value['volcengine'];
-
-  if (data?.primary_session_percent != null && data.is_connected) {
-    const p = Math.round(data.primary_session_percent);
-    invoke('update_tray_title', { title: ` ${p}%` });
-  } else {
-    invoke('update_tray_title', { title: '' });
-  }
+  invoke('update_tray_title', { title: computeTrayTitle(target) });
 }
 
 // 周期刷新由 Rust 后台线程负责（主窗口隐藏时 webview 定时器会被 macOS/
@@ -164,7 +169,7 @@ function syncBackgroundPrefs() {
   invoke('set_background_interval', { minutes: refreshInterval.value }).catch(() => {});
   invoke('set_tray_prefs', {
     target: trayTarget.value,
-    showPercent: showPercentageInTray.value,
+    percentMode: trayPercentMode.value,
   }).catch(() => {});
 }
 
@@ -173,12 +178,13 @@ watch(refreshInterval, (val) => {
   invoke('set_background_interval', { minutes: val }).catch(() => {});
 });
 
-watch(showPercentageInTray, (val) => {
-  localStorage.setItem('arkbar_tray_percent', String(val));
+watch(trayPercentMode, (val) => {
+  localStorage.setItem('arkbar_tray_percent_mode', val);
+  localStorage.removeItem('arkbar_tray_percent');
   updateTrayTitle();
   invoke('set_tray_prefs', {
     target: trayTarget.value,
-    showPercent: val,
+    percentMode: val,
   }).catch(() => {});
 });
 
@@ -187,7 +193,7 @@ watch(trayTarget, (val) => {
   updateTrayTitle();
   invoke('set_tray_prefs', {
     target: val,
-    showPercent: showPercentageInTray.value,
+    percentMode: trayPercentMode.value,
   }).catch(() => {});
 });
 
@@ -228,6 +234,11 @@ onMounted(() => {
 
   updateTrayTitle();
   syncBackgroundPrefs();
+  // 按持久化偏好应用菜单栏图标显隐（隐藏场景下托盘仍在后台刷新）；
+  // 直接读 localStorage，避免维护第二份状态
+  invoke('set_tray_icon_visible', {
+    visible: localStorage.getItem('arkbar_tray_icon_visible') !== 'false',
+  }).catch(() => {});
 
   const hasCached = !!providersData.value[activeProvider.value];
   fetchProviderUsage(activeProvider.value, hasCached, !hasCached);
@@ -299,11 +310,11 @@ onUnmounted(() => {
       v-else-if="currentView === 'settings'"
       :env-status="envStatus"
       :refresh-interval="refreshInterval"
-      :show-percentage-in-tray="showPercentageInTray"
+      :tray-percent-mode="trayPercentMode"
       :initial-update-info="updateInfo"
       :active-provider="activeProvider"
       @update-interval="refreshInterval = $event"
-      @update-tray-mode="showPercentageInTray = $event"
+      @update-tray-percent-mode="trayPercentMode = $event"
       @update-tray-target="trayTarget = $event"
       @re-login="currentView = 'onboarding'"
       @provider-token-updated="handleRefreshCurrent"

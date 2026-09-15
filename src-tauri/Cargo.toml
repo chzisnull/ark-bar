@@ -1,6 +1,6 @@
 [package]
 name = "ark-bar"
-version = "0.2.11"
+version = "0.2.12"
 description = "火山方舟 Coding Plan 菜单栏配额监控小工具"
 authors = ["chzisnull"]
 edition = "2021"
@@ -19,6 +19,7 @@ tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-ap
 tauri-plugin-opener = "2"
 tauri-plugin-positioner = { version = "2", features = ["tray-icon"] }
 tauri-plugin-autostart = "2.5.1"
+tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
