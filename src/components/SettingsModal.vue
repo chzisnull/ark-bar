@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type { EnvironmentStatus, UpdateInfo, ProviderType } from '../types';
 import { ArrowLeft, RefreshCw, Download, CheckCircle2, AlertCircle, Power, ExternalLink, ChevronDown } from 'lucide-vue-next';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart';
 import UpdateModal from './UpdateModal.vue';
 
 const props = defineProps<{
@@ -27,8 +28,13 @@ const isCheckingUpdate = ref(false);
 const updateResult = ref<UpdateInfo | null>(props.initialUpdateInfo || null);
 const updateError = ref('');
 const isFloatOpen = ref(false);
+const isAutostartEnabled = ref<boolean | null>(null);
+const isAutostartLoading = ref(false);
+const isAutostartUpdating = ref(false);
+const autostartError = ref('');
+let autostartStatusRequestId = 0;
 const showUpdateModal = ref(false);
-const appVersion = computed(() => updateResult.value?.current_version || props.initialUpdateInfo?.current_version || '0.2.10');
+const appVersion = computed(() => updateResult.value?.current_version || props.initialUpdateInfo?.current_version || '0.2.11');
 
 // Tray Target Provider selection
 const trayTarget = ref<ProviderType | 'auto'>(
@@ -70,6 +76,79 @@ function handleTrayTargetChange(e: Event) {
   emit('update-tray-target', target);
 }
 
+function formatAutostartError(err: unknown): string {
+  if (typeof err === 'string' && err.trim()) return err;
+  if (err && typeof err === 'object' && 'message' in err) {
+    const message = String((err as { message?: unknown }).message || '').trim();
+    if (message) return message;
+  }
+  return '未知错误';
+}
+
+async function loadAutostartStatus() {
+  if (isAutostartLoading.value || isAutostartUpdating.value) return;
+  const requestId = ++autostartStatusRequestId;
+  isAutostartLoading.value = true;
+  autostartError.value = '';
+  try {
+    const enabled = await isEnabled();
+    if (requestId === autostartStatusRequestId) {
+      isAutostartEnabled.value = enabled;
+    }
+  } catch (err) {
+    if (requestId === autostartStatusRequestId) {
+      isAutostartEnabled.value = null;
+      autostartError.value = `读取开机自动启动状态失败：${formatAutostartError(err)}`;
+    }
+  } finally {
+    if (requestId === autostartStatusRequestId) {
+      isAutostartLoading.value = false;
+    }
+  }
+}
+
+async function toggleAutostart() {
+  if (
+    isAutostartEnabled.value === null ||
+    isAutostartLoading.value ||
+    isAutostartUpdating.value
+  ) {
+    return;
+  }
+
+  const previous = isAutostartEnabled.value;
+  const next = !previous;
+  isAutostartUpdating.value = true;
+  autostartError.value = '';
+  isAutostartEnabled.value = next;
+
+  try {
+    if (next) {
+      await enable();
+    } else {
+      await disable();
+    }
+  } catch (err) {
+    // 注册/取消本身失败时，系统状态仍应保持 previous。
+    isAutostartEnabled.value = previous;
+    autostartError.value = `设置开机自动启动失败：${formatAutostartError(err)}`;
+    isAutostartUpdating.value = false;
+    return;
+  }
+
+  try {
+    // 以系统注册状态为准，避免底层调用部分成功时 UI 假状态。
+    isAutostartEnabled.value = await isEnabled();
+  } catch (err) {
+    // enable/disable 已经成功，校验失败时不能假装回滚；标记未知，
+    // 让用户通过重试重新读取真实系统状态。
+    isAutostartEnabled.value = null;
+    autostartError.value = `已更新开机启动设置，但读取最新状态失败：${formatAutostartError(err)}`;
+  } finally {
+    isAutostartUpdating.value = false;
+  }
+}
+
 async function handleCheckUpdate() {
   isCheckingUpdate.value = true;
   updateError.value = '';
@@ -99,6 +178,7 @@ async function handleQuit() {
 }
 
 onMounted(async () => {
+  void loadAutostartStatus();
   try {
     isFloatOpen.value = await invoke<boolean>('is_float_window_open');
   } catch {}
@@ -280,7 +360,54 @@ onMounted(async () => {
         </div>
       </section>
 
-      <!-- 3. Data Sync -->
+      <!-- 3. Startup Behavior -->
+      <section>
+        <div class="flex items-center justify-between px-0.5 mb-2">
+          <span class="text-[11px] font-semibold text-slate-400">启动设置</span>
+        </div>
+        <div class="rounded-xl border border-slate-800/60 bg-[#131a2a] divide-y divide-slate-800/60 overflow-hidden">
+          <div class="px-4 py-3 flex items-center gap-3">
+            <div class="flex-1 min-w-0">
+              <p class="text-xs font-medium text-white leading-5">开机自动启动</p>
+              <p class="text-[11px] text-slate-500 leading-4 mt-0.5 truncate">登录系统后自动启动 ArkBar</p>
+            </div>
+            <div class="w-[128px] h-7 shrink-0 flex items-center justify-end">
+              <button
+                type="button"
+                @click="toggleAutostart"
+                :disabled="isAutostartLoading || isAutostartUpdating || isAutostartEnabled === null"
+                :aria-pressed="isAutostartEnabled === true"
+                aria-label="开机自动启动"
+                :title="isAutostartLoading ? '正在读取状态' : isAutostartUpdating ? '正在更新开机启动设置' : '开机自动启动'"
+                class="w-9 h-5 rounded-full p-0.5 border transition-colors duration-200 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                :class="isAutostartEnabled ? 'bg-indigo-600 border-indigo-500' : 'bg-slate-800 border-slate-700'"
+              >
+                <RefreshCw
+                  v-if="isAutostartLoading || isAutostartUpdating"
+                  class="w-3.5 h-3.5 p-0.5 text-slate-300 animate-spin"
+                />
+                <div
+                  v-else
+                  class="w-3.5 h-3.5 rounded-full bg-white shadow-sm transition-transform duration-200"
+                  :class="{ 'translate-x-4': isAutostartEnabled === true }"
+                ></div>
+              </button>
+            </div>
+          </div>
+          <div v-if="autostartError" class="px-4 py-2.5 flex items-center justify-between gap-2 text-[11px] text-rose-400" role="alert">
+            <span class="min-w-0">{{ autostartError }}</span>
+            <button
+              type="button"
+              @click="loadAutostartStatus"
+              class="shrink-0 text-slate-300 hover:text-white underline underline-offset-2"
+            >
+              重试
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 4. Data Sync -->
       <section>
         <div class="flex items-center justify-between px-0.5 mb-2">
           <span class="text-[11px] font-semibold text-slate-400">数据同步</span>

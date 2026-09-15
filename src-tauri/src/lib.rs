@@ -22,6 +22,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_positioner::init())
+        .plugin(tauri_plugin_autostart::Builder::new().build())
         .setup(|app| {
             // Set macOS activation policy to Accessory so it doesn't show in Dock
             #[cfg(target_os = "macos")]
