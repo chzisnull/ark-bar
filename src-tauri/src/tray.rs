@@ -3,7 +3,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{
     image::Image,
-    menu::{Menu, MenuItem},
+    menu::{ContextMenu, Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager, WebviewWindow,
 };
@@ -58,11 +58,16 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let float_i = MenuItem::with_id(app, "toggle_float", "切换桌面悬浮窗", true, None::<&str>)?;
     let quit_i = MenuItem::with_id(app, "quit", "退出 ArkBar", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show_i, &float_i, &quit_i])?;
+    // 弹出用副本：菜单不再常驻挂载到状态栏项（见下），由事件闭包持有
+    let popup_menu = menu.clone();
 
     let mut builder = TrayIconBuilder::with_id("ark-bar-tray")
         .tooltip("ArkBar - 多模型配额监控")
         .icon(tray_image)
-        .menu(&menu)
+        // macOS 27 起，系统会接管挂载了菜单的状态栏项的左键（直接弹菜单，
+        // 自定义点击处理收不到事件）。与上游 tray-icon 0.25.1 (#365) 的修复
+        // 思路一致：菜单不常驻挂载，右键时经 popup_at 在光标处手动弹出。
+        // 待 tauri 升级到含 tray-icon >= 0.25.1 的版本后可移除本变通。
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| {
             match event.id.as_ref() {
@@ -93,21 +98,36 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let _tray = builder
-        .on_tray_icon_event(|tray, event| {
+        .on_tray_icon_event(move |tray, event| {
             tauri_plugin_positioner::on_tray_event(tray.app_handle(), &event);
             if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = event
+                button, button_state, ..
+            } = &event
             {
-                let app = tray.app_handle();
-                if let Some(window) = app.get_webview_window("main") {
-                    if window.is_visible().unwrap_or(false) {
-                        let _ = window.hide();
-                    } else {
-                        show_main_popover(&window);
+                match (button, button_state) {
+                    // 左键：显隐切换主面板（与历史行为一致）
+                    (MouseButton::Left, MouseButtonState::Up) => {
+                        let app = tray.app_handle();
+                        if let Some(window) = app.get_webview_window("main") {
+                            if window.is_visible().unwrap_or(false) {
+                                let _ = window.hide();
+                            } else {
+                                show_main_popover(&window);
+                            }
+                        }
                     }
+                    // 右键：在当前光标处手动弹出菜单（菜单未挂载到状态栏项）。
+                    // 不传坐标时 muda 直接用 NSEvent mouseLocation 屏幕坐标，
+                    // 与主窗口是否隐藏无关
+                    (MouseButton::Right, MouseButtonState::Up) => {
+                        let app = tray.app_handle();
+                        if let Some(ww) = app.get_webview_window("main") {
+                            if let Err(e) = popup_menu.popup(ww.as_ref().window()) {
+                                eprintln!("弹出托盘菜单失败: {e}");
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
         })

@@ -50,7 +50,7 @@ const isAutostartUpdating = ref(false);
 const autostartError = ref('');
 let autostartStatusRequestId = 0;
 const showUpdateModal = ref(false);
-const appVersion = computed(() => updateResult.value?.current_version || props.initialUpdateInfo?.current_version || '0.2.12');
+const appVersion = computed(() => updateResult.value?.current_version || props.initialUpdateInfo?.current_version || '0.2.13');
 
 // Tray Target Provider selection
 const trayTarget = ref<ProviderType | 'auto'>(
