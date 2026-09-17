@@ -328,9 +328,51 @@ pub struct VolcSeatMilestones {
     pub short_term_usage: Option<f64>,
     pub weekly_usage: Option<f64>,
     pub monthly_usage: Option<f64>,
+    /// true = values came from the last successful seat response after a failure
+    pub is_stale: bool,
 }
 
 static SEAT_CACHE: Mutex<Option<(Instant, VolcSeatMilestones)>> = Mutex::new(None);
+/// 查询失败后的退避窗口：期间不再 spawn arkcli，避免把 SSO 续期打进限流
+static SEAT_FAIL_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
+const SEAT_FAIL_BACKOFF: Duration = Duration::from_secs(60);
+/// 失败期间继续沿用最近一次成功席位数据的最大时长（保持口径一致，
+/// 避免回退到 usage plan 的日历边界值造成周/月数字与重置时间不匹配）
+const SEAT_STALE_MAX: Duration = Duration::from_secs(30 * 60);
+
+fn seat_stale_milestones(known_seat_id: Option<&str>) -> Option<VolcSeatMilestones> {
+    let guard = SEAT_CACHE.lock().ok()?;
+    let (cached_at, data) = guard.as_ref()?;
+    if cached_at.elapsed() >= SEAT_STALE_MAX {
+        return None;
+    }
+    // 账号/席位切换保护：plan 给出的席位与缓存席位不一致时不复用旧值
+    if let Some(known) = known_seat_id {
+        if let Some(cached_sid) = &data.seat_id {
+            if known.trim() != cached_sid.as_str() {
+                return None;
+            }
+        }
+    }
+    let mut out = data.clone();
+    out.is_stale = true;
+    Some(out)
+}
+
+fn mark_seat_failure(known_seat_id: Option<&str>) -> Option<VolcSeatMilestones> {
+    if let Ok(mut f) = SEAT_FAIL_UNTIL.lock() {
+        *f = Some(Instant::now() + SEAT_FAIL_BACKOFF);
+    }
+    seat_stale_milestones(known_seat_id)
+}
+
+/// SeatID 是稳定值，持久化后可省掉每轮刷新里的 get_seat_info 一次
+/// arkcli spawn（SSO 限流期间少一次续期请求）
+fn persist_seat_id(sid: &str) {
+    if crate::token_store::get_token("__seat_id").as_deref() != Some(sid) {
+        let _ = crate::token_store::save_token("__seat_id", sid);
+    }
+}
 
 pub fn query_volc_seat_usage(known_seat_id: Option<&str>) -> Option<VolcSeatMilestones> {
     query_volc_seat_usage_cached(known_seat_id, false)
@@ -347,37 +389,62 @@ fn query_volc_seat_usage_cached(known_seat_id: Option<&str>, force: bool) -> Opt
         }
     }
 
-    // 1. Identify SeatID: use known_seat_id or query usage.get_seat_info
+    // 失败退避窗口内不再打 arkcli（force 即用户手动刷新，仍允许尝试）
+    if !force {
+        if let Ok(f) = SEAT_FAIL_UNTIL.lock() {
+            if let Some(t) = *f {
+                if Instant::now() < t {
+                    return seat_stale_milestones(known_seat_id);
+                }
+            }
+        }
+    }
+
+    // 1. Identify SeatID: usage plan 提供的 > 持久化缓存的 > 实时查询的
     let seat_id = if let Some(sid) = known_seat_id.filter(|s| !s.trim().is_empty()) {
-        sid.to_string()
+        persist_seat_id(sid.trim());
+        sid.trim().to_string()
+    } else if let Some(sid) = crate::token_store::get_token("__seat_id").filter(|s| !s.is_empty()) {
+        sid
     } else {
         match execute_cmd("arkcli", &["api", "usage.get_seat_info", "--params", "{\"ProjectName\":\"default\"}", "--format", "json"]) {
             Ok(output) if output.status.success() => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                serde_json::from_str::<Value>(&stdout)
+                let queried = serde_json::from_str::<Value>(&stdout)
                     .ok()
                     .and_then(|v| v.get("Result").and_then(|r| r.get("SeatID")).and_then(|s| s.as_str()).map(|s| s.to_string()))
-                    .unwrap_or_default()
+                    .unwrap_or_default();
+                if queried.is_empty() {
+                    return mark_seat_failure(known_seat_id);
+                }
+                persist_seat_id(&queried);
+                queried
             }
-            _ => String::new(),
+            _ => return mark_seat_failure(known_seat_id),
         }
     };
 
     // 2. Query usage.get_seat_info_usage with SeatID and ProjectName
     let params = if !seat_id.is_empty() {
-        format!("{{\"SeatID\":\"{}\",\"ProjectName\":\"default\"}}", seat_id)
+        serde_json::json!({"SeatID": seat_id, "ProjectName": "default"}).to_string()
     } else {
-        "{\"ProjectName\":\"default\"}".to_string()
+        serde_json::json!({"ProjectName": "default"}).to_string()
     };
 
-    let output = execute_cmd("arkcli", &["api", "usage.get_seat_info_usage", "--params", &params, "--format", "json"]).ok()?;
-    if !output.status.success() {
-        return None;
-    }
+    let output = match execute_cmd("arkcli", &["api", "usage.get_seat_info_usage", "--params", &params, "--format", "json"]) {
+        Ok(o) if o.status.success() => o,
+        _ => return mark_seat_failure(known_seat_id),
+    };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let json_val = serde_json::from_str::<Value>(&stdout).ok()?;
-    let result = json_val.get("Result")?;
+    let json_val = match serde_json::from_str::<Value>(&stdout) {
+        Ok(v) => v,
+        Err(_) => return mark_seat_failure(known_seat_id),
+    };
+    let result = match json_val.get("Result") {
+        Some(r) => r.clone(),
+        None => return mark_seat_failure(known_seat_id),
+    };
 
     // API returns -1 when the 5-hour window has not started (0% used).
     let short_term_reset = result.get("ShortTermResetMilestone")
@@ -412,8 +479,24 @@ fn query_volc_seat_usage_cached(known_seat_id: Option<&str>, force: bool) -> Opt
         short_term_usage,
         weekly_usage,
         monthly_usage,
+        is_stale: false,
     };
 
+    // 全部字段解析失败说明响应结构变化或返回异常空壳：按失败处理，
+    // 避免静默产生一个"全 None"的里程碑导致所有覆盖失效
+    if milestones.short_term_usage.is_none()
+        && milestones.weekly_usage.is_none()
+        && milestones.monthly_usage.is_none()
+        && milestones.short_term_reset.is_none()
+        && milestones.weekly_reset.is_none()
+        && milestones.monthly_reset.is_none()
+    {
+        return mark_seat_failure(known_seat_id);
+    }
+
+    if let Ok(mut f) = SEAT_FAIL_UNTIL.lock() {
+        *f = None;
+    }
     if let Ok(mut guard) = SEAT_CACHE.lock() {
         *guard = Some((Instant::now(), milestones.clone()));
     }
@@ -451,10 +534,22 @@ fn fetch_volcengine_usage_uncached(force: bool) -> ProviderUsageData {
             let seat_milestones = query_volc_seat_usage_cached(known_seat, force);
 
             if let Some(items) = json_val.get("items").and_then(|i| i.as_array()) {
+                let items_len = items.len();
                 for item in items {
                     let product = item.get("product").and_then(|p| p.as_str()).unwrap_or("Coding Plan").to_string();
                     let edition = item.get("edition").and_then(|e| e.as_str()).unwrap_or("Enterprise").to_string();
                     let mut periods = Vec::new();
+
+                    // 席位数据只应用于匹配的席位（单席位套餐始终应用），
+                    // 避免多席位账号把第一个席位的数值套到其他席位上
+                    let item_seat = item.get("seat_id").and_then(|s| s.as_str());
+                    let seat_for_item = seat_milestones.as_ref().filter(|m| {
+                        items_len == 1
+                            || m.seat_id
+                                .as_deref()
+                                .map(|s| item_seat == Some(s))
+                                .unwrap_or(false)
+                    });
 
                     if let Some(pers) = item.get("periods").and_then(|p| p.as_array()) {
                         for p in pers {
@@ -466,7 +561,7 @@ fn fetch_volcengine_usage_uncached(force: bool) -> ProviderUsageData {
 
                             let name = match label.as_str() {
                                 "session" => {
-                                    if let Some(ref m) = seat_milestones {
+                                    if let Some(ref m) = seat_for_item {
                                         if let Some(rt) = &m.short_term_reset {
                                             reset_at = Some(rt.clone());
                                         }
@@ -480,7 +575,7 @@ fn fetch_volcengine_usage_uncached(force: bool) -> ProviderUsageData {
                                     "近5小时用量".to_string()
                                 }
                                 "weekly" => {
-                                    if let Some(ref m) = seat_milestones {
+                                    if let Some(ref m) = seat_for_item {
                                         if let Some(rt) = &m.weekly_reset {
                                             reset_at = Some(rt.clone());
                                         }
@@ -491,7 +586,7 @@ fn fetch_volcengine_usage_uncached(force: bool) -> ProviderUsageData {
                                     "近一周用量".to_string()
                                 }
                                 "monthly" => {
-                                    if let Some(ref m) = seat_milestones {
+                                    if let Some(ref m) = seat_for_item {
                                         if reset_at.is_none() {
                                             reset_at = m.monthly_reset.clone();
                                         }
@@ -539,7 +634,15 @@ fn fetch_volcengine_usage_uncached(force: bool) -> ProviderUsageData {
                 provider_name: "火山方舟".to_string(),
                 icon: "🌋".to_string(),
                 is_connected: true,
-                status_message: Some("在线同步成功".to_string()),
+                status_message: Some(if seat_milestones.as_ref().is_some_and(|m| m.is_stale) {
+                    "同步失败，展示最近一次成功的数据".to_string()
+                } else if seat_milestones.is_none() {
+                    // usage plan 成功但席位接口失败：数字来自 plan 口径，
+                    // 重置时间可能不完整
+                    "席位数据同步失败，数值可能不完整".to_string()
+                } else {
+                    "在线同步成功".to_string()
+                }),
                 error_message: None,
                 account_info: Some(ProviderAccountInfo {
                     user_name,
@@ -601,7 +704,11 @@ fn fetch_volcengine_usage_uncached(force: bool) -> ProviderUsageData {
                     provider_name: "火山方舟".to_string(),
                     icon: "🌋".to_string(),
                     is_connected: true,
-                    status_message: Some("在线同步成功 (席位直连)".to_string()),
+                    status_message: Some(if milestones.is_stale {
+                        "同步失败，展示最近一次成功的数据".to_string()
+                    } else {
+                        "在线同步成功 (席位直连)".to_string()
+                    }),
                     error_message: None,
                     account_info: Some(ProviderAccountInfo {
                         user_name: None,

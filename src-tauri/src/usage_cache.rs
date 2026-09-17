@@ -7,6 +7,9 @@ use crate::provider_models::ProviderUsageData;
 pub struct UsageCache {
     inner: Mutex<Option<(Instant, ProviderUsageData)>>,
     refreshing: AtomicBool,
+    /// 最近一次同步失败的时间：成功写入时清除。命中缓存返回前据此打
+    /// "同步失败"标，覆盖后台线程静默失败时 UI 无感知的路径
+    last_failure: Mutex<Option<Instant>>,
 }
 
 impl UsageCache {
@@ -14,6 +17,7 @@ impl UsageCache {
         Self {
             inner: Mutex::new(None),
             refreshing: AtomicBool::new(false),
+            last_failure: Mutex::new(None),
         }
     }
 
@@ -48,20 +52,50 @@ impl UsageCache {
         if let Ok(mut guard) = self.inner.lock() {
             *guard = Some((Instant::now(), data));
         }
+        if let Ok(mut f) = self.last_failure.lock() {
+            *f = None;
+        }
         self.refreshing.store(false, Ordering::SeqCst);
     }
 
     /// Keep the last successful payload if a refresh fails or times out.
-    pub fn set_prefer_connected(&self, data: ProviderUsageData) {
+    /// Returns true when the new payload was stored, false when the previous
+    /// successful payload was kept (i.e. the caller is serving stale data).
+    pub fn set_prefer_connected(&self, data: ProviderUsageData) -> bool {
+        // A provider may have usable stale values while its latest request
+        // failed. Do not refresh the cache timestamp with that stale payload,
+        // otherwise a failed SSO/API call would look fresh forever.
+        if data.status_message.as_deref().is_some_and(|s| s.contains("同步失败")) {
+            self.refreshing.store(false, Ordering::SeqCst);
+            if let Ok(mut f) = self.last_failure.lock() {
+                *f = Some(Instant::now());
+            }
+            return false;
+        }
         if !data.is_connected {
             if let Some(old) = self.peek() {
                 if old.is_connected {
                     self.refreshing.store(false, Ordering::SeqCst);
-                    return;
+                    if let Ok(mut f) = self.last_failure.lock() {
+                        *f = Some(Instant::now());
+                    }
+                    return false;
                 }
             }
         }
         self.set(data);
+        true
+    }
+
+    /// 缓存命中返回前调用：若上次成功之后发生过同步失败，
+    /// 给副本打标（缓存本体保持原样，成功后自动恢复）
+    fn mark_if_failed(&self, mut data: ProviderUsageData) -> ProviderUsageData {
+        if let Ok(f) = self.last_failure.lock() {
+            if f.is_some() {
+                data.status_message = Some("同步失败，展示最近一次成功的数据".to_string());
+            }
+        }
+        data
     }
 
     pub fn get_or_refresh<F>(&'static self, force: bool, fetch: F) -> ProviderUsageData
@@ -73,7 +107,7 @@ impl UsageCache {
 
         if !force {
             if let Some(fresh) = self.get_fresh(FRESH_TTL) {
-                return fresh;
+                return self.mark_if_failed(fresh);
             }
             if let Some(stale) = self.get_stale(STALE_TTL) {
                 if self.begin_refresh() {
@@ -81,21 +115,28 @@ impl UsageCache {
                         // 捕获 panic：保证 set/set_prefer_connected 未执行时
                         // 也复位单飞标志，refreshing 不会永久卡死
                         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(fetch)) {
-                            Ok(data) => self.set_prefer_connected(data),
+                            Ok(data) => {
+                                self.set_prefer_connected(data);
+                            }
                             Err(_) => self.refreshing.store(false, Ordering::SeqCst),
                         }
                     });
                 }
-                return stale;
+                return self.mark_if_failed(stale);
             }
         }
 
         let data = fetch();
-        self.set_prefer_connected(data.clone());
-        // set_prefer_connected 在拉取失败时会保留上次成功的缓存；
-        // 返回"生效后"的数据，避免把瞬时失败扩散给调用方
-        // （后台线程 emit、托盘标题与前端展示共用这条路径）。
-        self.peek().unwrap_or(data)
+        let stored_new = self.set_prefer_connected(data.clone());
+        if stored_new {
+            data
+        } else {
+            // 失败保旧：给返回副本打标，让前端如实展示"同步失败"，
+            // 缓存本体保持原样（下次成功后自动恢复）
+            let mut stale = self.peek().unwrap_or(data);
+            stale.status_message = Some("同步失败，展示最近一次成功的数据".to_string());
+            stale
+        }
     }
 
     pub fn begin_refresh(&self) -> bool {

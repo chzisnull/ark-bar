@@ -2,6 +2,11 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Mutex;
+
+/// tokens.json 是整文件读改写：SeatID 持久化与 provider token 保存
+/// 并发时用这把锁串行化，避免互相覆盖丢数据
+static TOKEN_LOCK: Mutex<()> = Mutex::new(());
 
 fn get_config_file_path() -> PathBuf {
     let mut dir = None;
@@ -22,7 +27,7 @@ fn get_config_file_path() -> PathBuf {
     dir_path.join("tokens.json")
 }
 
-pub fn get_all_tokens() -> HashMap<String, String> {
+fn read_tokens_unlocked() -> HashMap<String, String> {
     let p = get_config_file_path();
     if p.exists() {
         if let Ok(content) = fs::read_to_string(p) {
@@ -34,12 +39,18 @@ pub fn get_all_tokens() -> HashMap<String, String> {
     HashMap::new()
 }
 
+pub fn get_all_tokens() -> HashMap<String, String> {
+    let _guard = TOKEN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    read_tokens_unlocked()
+}
+
 pub fn get_token(provider: &str) -> Option<String> {
     get_all_tokens().get(provider).cloned()
 }
 
 pub fn save_token(provider: &str, token: &str) -> Result<(), String> {
-    let mut tokens = get_all_tokens();
+    let _guard = TOKEN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut tokens = read_tokens_unlocked();
     if token.trim().is_empty() {
         tokens.remove(provider);
     } else {

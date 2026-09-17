@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted, defineAsyncComponent } from 'vue';
 import type { ProviderType, ProviderUsageData, UpdateInfo, ProviderQuotaPeriod } from '../types';
-import { RefreshCw, Settings, Clock, Sparkles, Download, X, KeyRound, ExternalLink } from 'lucide-vue-next';
+import { RefreshCw, Settings, Clock, Sparkles, Download, X, KeyRound, ExternalLink, TriangleAlert } from 'lucide-vue-next';
 import { openUrl } from '@tauri-apps/plugin-opener';
 
 const UpdateModal = defineAsyncComponent(() => import('./UpdateModal.vue'));
@@ -37,6 +37,11 @@ const currentUsage = computed<ProviderUsageData | null>(() => {
 
 const isProviderLoading = computed(() => {
   return !!props.loadingMap?.[props.activeProvider] || props.isRefreshing;
+});
+
+// 后端"失败保旧"时会给返回数据打标：数据是上次成功的，不是刚刚同步的
+const isStaleData = computed(() => {
+  return !!currentUsage.value?.status_message?.includes('同步失败');
 });
 
 // 徽章基类：统一高度/内边距/圆角，杜绝 py-0.2 之类被静默忽略的非法刻度
@@ -453,7 +458,11 @@ function formatShortReset(dateStr?: string): string {
 
         <!-- Footer Meta: last sync + console link -->
         <div class="shrink-0 mt-auto pt-1 px-1 flex items-center justify-between text-[10px] text-slate-500">
-          <span class="flex items-center gap-1.5">
+          <span v-if="isStaleData" class="flex items-center gap-1.5 text-amber-400" title="最近一次同步失败（可能被限流或断网），展示的是上次成功的数据">
+            <TriangleAlert class="w-3 h-3 shrink-0" />
+            同步失败 · 展示上次成功数据
+          </span>
+          <span v-else class="flex items-center gap-1.5">
             <span
               class="w-1.5 h-1.5 rounded-full"
               :class="isProviderLoading ? 'bg-indigo-400 animate-pulse' : 'bg-slate-600'"
