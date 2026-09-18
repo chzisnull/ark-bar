@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, watch, defineAsyncComponent } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { EnvironmentStatus, UpdateInfo, ProviderType, ProviderUsageData, TrayPercentMode } from './types';
+import type { EnvironmentStatus, UpdateInfo, ProviderType, ProviderUsageData, TrayPercentMode, ProviderTabConfig } from './types';
 import UsagePanel from './components/UsagePanel.vue';
 
 // Lazy load non-critical components to minimize initial bundle parsing
@@ -21,6 +21,67 @@ const loadingMap = ref<Record<ProviderType, boolean>>({
   grok: false,
   codex: false,
 });
+
+const DEFAULT_PROVIDER_TABS: ProviderTabConfig[] = [
+  { id: 'volcengine', name: '火山方舟', visible: true },
+  { id: 'antigravity', name: 'Antigravity', visible: true },
+  { id: 'grok', name: 'Grok', visible: true },
+  { id: 'codex', name: 'Codex', visible: true },
+];
+
+function loadProviderTabsConfig(): ProviderTabConfig[] {
+  try {
+    const raw = localStorage.getItem('arkbar_provider_tabs');
+    if (!raw) return DEFAULT_PROVIDER_TABS;
+    const parsed = JSON.parse(raw) as Partial<ProviderTabConfig>[];
+    if (!Array.isArray(parsed)) return DEFAULT_PROVIDER_TABS;
+
+    const result: ProviderTabConfig[] = [];
+    const validIds: ProviderType[] = ['volcengine', 'antigravity', 'grok', 'codex'];
+    const nameMap: Record<ProviderType, string> = {
+      volcengine: '火山方舟',
+      antigravity: 'Antigravity',
+      grok: 'Grok',
+      codex: 'Codex',
+    };
+
+    for (const item of parsed) {
+      if (item && item.id && validIds.includes(item.id) && !result.some((r) => r.id === item.id)) {
+        result.push({
+          id: item.id,
+          name: nameMap[item.id],
+          visible: item.visible !== false,
+        });
+      }
+    }
+    for (const id of validIds) {
+      if (!result.some((r) => r.id === id)) {
+        result.push({
+          id,
+          name: nameMap[id],
+          visible: true,
+        });
+      }
+    }
+    if (!result.some((r) => r.visible)) {
+      result[0].visible = true;
+    }
+    return result;
+  } catch {
+    return DEFAULT_PROVIDER_TABS;
+  }
+}
+
+const providerTabs = ref<ProviderTabConfig[]>(loadProviderTabsConfig());
+
+function saveProviderTabs(tabs: ProviderTabConfig[]) {
+  providerTabs.value = tabs;
+  localStorage.setItem('arkbar_provider_tabs', JSON.stringify(tabs));
+  const visible = tabs.filter((t) => t.visible);
+  if (visible.length > 0 && !visible.some((t) => t.id === activeProvider.value)) {
+    handleSwitchProvider(visible[0].id);
+  }
+}
 
 const activeProvider = ref<ProviderType>(
   (localStorage.getItem('arkbar_active_provider') as ProviderType) || 'volcengine'
@@ -130,9 +191,9 @@ function handleSwitchProvider(provider: ProviderType) {
 }
 
 function prefetchOtherProviders() {
-  const allProviders: ProviderType[] = ['volcengine', 'antigravity', 'grok', 'codex'];
+  const visibleProviders = providerTabs.value.filter((p) => p.visible).map((p) => p.id);
   void Promise.all(
-    allProviders
+    visibleProviders
       .filter((p) => p !== activeProvider.value)
       .map((p) => fetchProviderUsage(p, true))
   );
@@ -315,10 +376,12 @@ onUnmounted(() => {
       v-else-if="currentView === 'panel'"
       :providers-data="providersData"
       :active-provider="activeProvider"
+      :provider-tabs="providerTabs"
       :is-refreshing="isRefreshing"
       :loading-map="loadingMap"
       :update-info="updateInfo"
       @switch-provider="handleSwitchProvider"
+      @update-provider-tabs="saveProviderTabs"
       @refresh="handleRefreshCurrent"
       @go-auth="handleGoAuth"
       @open-settings="currentView = 'settings'"
@@ -332,9 +395,11 @@ onUnmounted(() => {
       :tray-percent-mode="trayPercentMode"
       :initial-update-info="updateInfo"
       :active-provider="activeProvider"
+      :provider-tabs="providerTabs"
       @update-interval="refreshInterval = $event"
       @update-tray-percent-mode="trayPercentMode = $event"
       @update-tray-target="trayTarget = $event"
+      @update-provider-tabs="saveProviderTabs"
       @re-login="currentView = 'onboarding'"
       @provider-token-updated="handleRefreshCurrent"
       @update-checked="updateInfo = $event"

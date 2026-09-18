@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted, defineAsyncComponent } from 'vue';
-import type { ProviderType, ProviderUsageData, UpdateInfo, ProviderQuotaPeriod } from '../types';
+import type { ProviderType, ProviderUsageData, UpdateInfo, ProviderQuotaPeriod, ProviderTabConfig } from '../types';
 import { RefreshCw, Settings, Clock, Sparkles, Download, X, KeyRound, ExternalLink, TriangleAlert, Gauge, Coins } from 'lucide-vue-next';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import TokenStatsCard from './TokenStatsCard.vue';
@@ -11,6 +11,7 @@ const UpdateModal = defineAsyncComponent(() => import('./UpdateModal.vue'));
 const props = defineProps<{
   providersData: Record<ProviderType, ProviderUsageData | null>;
   activeProvider: ProviderType;
+  providerTabs?: ProviderTabConfig[];
   isRefreshing: boolean;
   loadingMap?: Record<ProviderType, boolean>;
   updateInfo?: UpdateInfo | null;
@@ -18,6 +19,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'switch-provider', p: ProviderType): void;
+  (e: 'update-provider-tabs', tabs: ProviderTabConfig[]): void;
   (e: 'refresh'): void;
   (e: 'open-settings'): void;
   (e: 'go-auth', p: ProviderType): void;
@@ -42,12 +44,57 @@ function formatTokens(tokens: number): string {
   return tokens.toLocaleString();
 }
 
-const providerList: { id: ProviderType; name: string }[] = [
-  { id: 'volcengine', name: '火山方舟' },
-  { id: 'antigravity', name: 'Antigravity' },
-  { id: 'grok', name: 'Grok' },
-  { id: 'codex', name: 'Codex' },
-];
+const visibleTabs = computed<ProviderTabConfig[]>(() => {
+  if (props.providerTabs && props.providerTabs.length > 0) {
+    return props.providerTabs.filter((t) => t.visible);
+  }
+  return [
+    { id: 'volcengine', name: '火山方舟', visible: true },
+    { id: 'antigravity', name: 'Antigravity', visible: true },
+    { id: 'grok', name: 'Grok', visible: true },
+    { id: 'codex', name: 'Codex', visible: true },
+  ];
+});
+
+let draggedTabIdx: number | null = null;
+const isDraggingTab = ref(false);
+
+function handleTabDragStart(index: number, event: DragEvent) {
+  draggedTabIdx = index;
+  isDraggingTab.value = true;
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', String(index));
+  }
+}
+
+function handleTabDragEnd() {
+  draggedTabIdx = null;
+  isDraggingTab.value = false;
+}
+
+function handleTabDrop(targetIndex: number) {
+  if (draggedTabIdx == null || draggedTabIdx === targetIndex) {
+    draggedTabIdx = null;
+    isDraggingTab.value = false;
+    return;
+  }
+  const currentTabs = props.providerTabs ? [...props.providerTabs] : [...visibleTabs.value];
+  const visible = visibleTabs.value;
+  const sourceTab = visible[draggedTabIdx];
+  const targetTab = visible[targetIndex];
+  if (!sourceTab || !targetTab) return;
+
+  const sourceIdxInFull = currentTabs.findIndex((t) => t.id === sourceTab.id);
+  const targetIdxInFull = currentTabs.findIndex((t) => t.id === targetTab.id);
+  if (sourceIdxInFull !== -1 && targetIdxInFull !== -1) {
+    const [moved] = currentTabs.splice(sourceIdxInFull, 1);
+    currentTabs.splice(targetIdxInFull, 0, moved);
+    emit('update-provider-tabs', currentTabs);
+  }
+  draggedTabIdx = null;
+  isDraggingTab.value = false;
+}
 
 const currentUsage = computed<ProviderUsageData | null>(() => {
   return props.providersData[props.activeProvider] || null;
@@ -243,11 +290,16 @@ function formatShortReset(dateStr?: string): string {
       <!-- Provider Tabs Segmented Bar -->
       <div class="flex-1 min-w-0 flex items-center gap-0.5 bg-slate-900/70 p-1 rounded-xl border border-slate-800/60 overflow-x-auto no-scrollbar">
         <button
-          v-for="item in providerList"
+          v-for="(item, index) in visibleTabs"
           :key="item.id"
+          draggable="true"
+          @dragstart="handleTabDragStart(index, $event)"
+          @dragend="handleTabDragEnd"
+          @dragover.prevent
+          @drop="handleTabDrop(index)"
           @click="$emit('switch-provider', item.id)"
-          :title="item.name"
-          class="flex items-center gap-1.5 h-7 px-2 rounded-lg text-[11px] font-medium whitespace-nowrap transition-colors duration-100 shrink-0"
+          :title="item.name + '（支持拖拽调整顺序）'"
+          class="flex items-center gap-1.5 h-7 px-2 rounded-lg text-[11px] font-medium whitespace-nowrap transition-all duration-150 shrink-0 cursor-grab active:cursor-grabbing select-none"
           :class="[
             activeProvider === item.id
               ? 'bg-indigo-500/15 text-indigo-100 ring-1 ring-inset ring-indigo-500/40'

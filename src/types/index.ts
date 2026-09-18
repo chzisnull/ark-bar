@@ -68,6 +68,12 @@ export interface UpdateProgress {
 
 export type ProviderType = 'volcengine' | 'antigravity' | 'grok' | 'codex';
 
+export interface ProviderTabConfig {
+  id: ProviderType;
+  name: string;
+  visible: boolean;
+}
+
 /** 菜单栏显示模式：始终显示配额百分比 / 仅告警(≥75%或断连) / 纯图标 / 今日 Token / 近5小时 Token */
 export type TrayPercentMode = 'always' | 'alert' | 'never' | 'today_tokens' | 'session_tokens';
 
