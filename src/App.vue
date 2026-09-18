@@ -185,9 +185,8 @@ async function fetchProviderUsage(provider: ProviderType, silent = false, force 
 function handleSwitchProvider(provider: ProviderType) {
   activeProvider.value = provider;
   localStorage.setItem('arkbar_active_provider', provider);
-  // Never block the tab switch. Cached rows render immediately; network
-  // refresh always runs silently in the background.
-  fetchProviderUsage(provider, true);
+  // 零阻塞平滑切换：本地缓存秒级渲染，后台以 force=true 静默获取最新实时用量
+  fetchProviderUsage(provider, true, true);
 }
 
 function prefetchOtherProviders() {
@@ -295,9 +294,10 @@ let lastVisibleRefresh = 0;
 function onPanelBecomeVisible() {
   if (isFloatWindow.value) return;
   const now = Date.now();
-  if (now - lastVisibleRefresh < 20000) return;
+  if (now - lastVisibleRefresh < 15000) return;
   lastVisibleRefresh = now;
-  fetchProviderUsage(activeProvider.value, true, false);
+  // 面板唤醒时静默强制刷新当前活跃厂商，保证最新用量无需手动点击刷新即可呈现
+  fetchProviderUsage(activeProvider.value, true, true);
 }
 
 // 后台线程每轮刷新后逐厂商广播，这里更新本地状态并落盘

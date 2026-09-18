@@ -157,6 +157,8 @@ pub fn fetch_volcengine_token_summary(force: bool) -> Option<ProviderTokenSummar
     let mut daily_map: BTreeMap<String, DailyTokenRecord> = BTreeMap::new();
     let mut this_week_tokens: u64 = 0;
     let mut this_month_tokens: u64 = 0;
+    let mut this_month_input: u64 = 0;
+    let mut this_month_cache: u64 = 0;
     let mut today_tokens: u64 = 0;
     let mut today_input: u64 = 0;
     let mut today_output: u64 = 0;
@@ -208,6 +210,8 @@ pub fn fetch_volcengine_token_summary(force: bool) -> Option<ProviderTokenSummar
         }
         if date_str >= win.month_start {
             this_month_tokens += tot;
+            this_month_input += inp;
+            this_month_cache += cac;
         }
         if date_str == win.today {
             today_tokens += tot;
@@ -264,10 +268,18 @@ pub fn fetch_volcengine_token_summary(force: bool) -> Option<ProviderTokenSummar
         }
     }
 
-    // 缓存命中率计算：cache_hit / (input + cache_hit)
+    // 今日缓存命中率计算：today_cache / (today_input + today_cache)
     let denom = today_input + today_cache;
     let cache_hit_rate = if denom > 0 {
         ((today_cache as f64 / denom as f64) * 1000.0).round() / 10.0
+    } else {
+        0.0
+    };
+
+    // 本月缓存命中率计算：this_month_cache / (this_month_input + this_month_cache)
+    let month_denom = this_month_input + this_month_cache;
+    let this_month_cache_hit_rate = if month_denom > 0 {
+        ((this_month_cache as f64 / month_denom as f64) * 1000.0).round() / 10.0
     } else {
         0.0
     };
@@ -284,6 +296,9 @@ pub fn fetch_volcengine_token_summary(force: bool) -> Option<ProviderTokenSummar
         output_tokens: today_output,
         cache_hit_tokens: today_cache,
         cache_hit_rate,
+        this_month_cache_hit_tokens: this_month_cache,
+        this_month_cache_hit_rate,
+        supports_cache_stats: true,
         request_count: today_req,
         daily_history,
         data_source_type: "api".to_string(),
@@ -357,6 +372,8 @@ pub fn fetch_codex_token_summary(force: bool) -> Option<ProviderTokenSummary> {
     let mut today_req: u64 = 0;
     let mut this_week_tokens: u64 = 0;
     let mut this_month_tokens: u64 = 0;
+    let mut this_month_input: u64 = 0;
+    let mut this_month_cache: u64 = 0;
 
     // 对每个 rollout 文件，提取最近的 token_count 或 last_token_usage
     for file_path in files_to_scan {
@@ -399,6 +416,8 @@ pub fn fetch_codex_token_summary(force: bool) -> Option<ProviderTokenSummary> {
                             }
                             if date_str >= win.month_start.as_str() {
                                 this_month_tokens += tot;
+                                this_month_input += inp;
+                                this_month_cache += cac;
                             }
                             if date_str == win.today.as_str() {
                                 today_tokens += tot;
@@ -428,6 +447,13 @@ pub fn fetch_codex_token_summary(force: bool) -> Option<ProviderTokenSummary> {
         0.0
     };
 
+    let month_denom = this_month_input + this_month_cache;
+    let this_month_cache_hit_rate = if month_denom > 0 {
+        ((this_month_cache as f64 / month_denom as f64) * 1000.0).round() / 10.0
+    } else {
+        0.0
+    };
+
     let daily_history: Vec<DailyTokenRecord> = daily_map.into_values().collect();
 
     let summary = ProviderTokenSummary {
@@ -440,6 +466,9 @@ pub fn fetch_codex_token_summary(force: bool) -> Option<ProviderTokenSummary> {
         output_tokens: today_output,
         cache_hit_tokens: today_cache,
         cache_hit_rate,
+        this_month_cache_hit_tokens: this_month_cache,
+        this_month_cache_hit_rate,
+        supports_cache_stats: true,
         request_count: today_req,
         daily_history,
         data_source_type: "local_logs".to_string(),
@@ -474,6 +503,9 @@ pub fn create_antigravity_token_summary(used_percent_5h: f64, used_percent_weekl
         output_tokens: (est_today_tokens as f64 * 0.15) as u64,
         cache_hit_tokens: 0,
         cache_hit_rate: 0.0,
+        this_month_cache_hit_tokens: 0,
+        this_month_cache_hit_rate: 0.0,
+        supports_cache_stats: false,
         request_count: 0,
         daily_history: Vec::new(),
         data_source_type: "estimated".to_string(),
@@ -496,6 +528,9 @@ pub fn create_grok_token_summary(on_demand_used: Option<f64>, credit_percent: f6
         output_tokens: (est_tokens as f64 * 0.2) as u64,
         cache_hit_tokens: 0,
         cache_hit_rate: 0.0,
+        this_month_cache_hit_tokens: 0,
+        this_month_cache_hit_rate: 0.0,
+        supports_cache_stats: false,
         request_count: 0,
         daily_history: Vec::new(),
         data_source_type: "credits".to_string(),
@@ -528,11 +563,13 @@ mod tests {
     fn test_antigravity_and_grok_summary() {
         let agy = create_antigravity_token_summary(20.0, 50.0);
         assert_eq!(agy.data_source_type, "estimated");
+        assert_eq!(agy.supports_cache_stats, false);
         assert!(agy.today_tokens > 0);
         assert!(agy.this_week_tokens >= agy.today_tokens);
 
         let grok = create_grok_token_summary(Some(50.0), 50.0);
         assert_eq!(grok.data_source_type, "credits");
+        assert_eq!(grok.supports_cache_stats, false);
         assert!(grok.today_tokens > 0);
     }
 }

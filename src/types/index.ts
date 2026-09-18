@@ -96,6 +96,9 @@ export interface ProviderTokenSummary {
   output_tokens: number;
   cache_hit_tokens: number;
   cache_hit_rate: number;
+  this_month_cache_hit_tokens?: number;
+  this_month_cache_hit_rate?: number;
+  supports_cache_stats?: boolean;
   request_count: number;
   daily_history: DailyTokenRecord[];
   data_source_type: string;

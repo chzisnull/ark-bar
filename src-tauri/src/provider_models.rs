@@ -70,15 +70,21 @@ pub struct ProviderTokenSummary {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cache_hit_tokens: u64,
-    /// 缓存命中率 (0.0% ~ 100.0%)
+    /// 今日缓存命中率 (0.0% ~ 100.0%)
     pub cache_hit_rate: f64,
+    /// 本月缓存命中 Token 汇总 (当月 1 日至今)
+    pub this_month_cache_hit_tokens: u64,
+    /// 本月缓存命中率 (0.0% ~ 100.0%)
+    pub this_month_cache_hit_rate: f64,
+    /// 该服务商是否支持上下文缓存命中统计
+    pub supports_cache_stats: bool,
     /// API/Agent 请求次数
     pub request_count: u64,
 
     /// 历史每日明细 (最近 14~30 天，用于折线/柱状图)
     pub daily_history: Vec<DailyTokenRecord>,
 
-    /// 数据来源类型: "api" (官方精准API) | "local_logs" (本地日志聚合) | "estimated" (配额折算)
+    /// 数据来源类型: "api" (官方精准API) | "local_logs" (本地日志聚合) | "credits" (额度积分换算) | "estimated" (配额折算)
     pub data_source_type: String,
     /// 数据更新时间 (ISO 8601)
     pub updated_at: String,

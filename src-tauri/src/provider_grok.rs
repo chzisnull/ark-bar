@@ -284,6 +284,10 @@ fn fetch_grok_usage_uncached(custom_token: Option<&str>) -> ProviderUsageData {
         periods,
     }];
 
+    let on_demand_val = config
+        .get("onDemandUsed")
+        .and_then(|v| v.get("val").and_then(|n| n.as_f64()).or_else(|| v.as_f64()));
+
     let result = ProviderUsageData {
         provider: "grok".to_string(),
         provider_name: "xAI Grok".to_string(),
@@ -302,7 +306,7 @@ fn fetch_grok_usage_uncached(custom_token: Option<&str>) -> ProviderUsageData {
         primary_reset_at: reset_at,
         console_url: Some("https://grok.com".to_string()),
         token_summary: Some(crate::token_stats::create_grok_token_summary(
-            config.get("onDemandUsed").and_then(|v| v.as_f64()),
+            on_demand_val,
             used_percent,
         )),
     };

@@ -156,7 +156,20 @@ const completionPct = computed(() => {
           class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-[10px] font-medium"
         >
           <Zap class="w-2.5 h-2.5" />
-          缓存节省 {{ tokenSummary.cache_hit_rate }}%
+          今日缓存节省 {{ tokenSummary.cache_hit_rate }}%
+        </span>
+        <span
+          v-else-if="tokenSummary && (tokenSummary.this_month_cache_hit_rate ?? 0) > 0"
+          class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-[10px] font-medium"
+        >
+          <Zap class="w-2.5 h-2.5" />
+          本月缓存节省 {{ tokenSummary.this_month_cache_hit_rate }}%
+        </span>
+        <span
+          v-else-if="tokenSummary?.supports_cache_stats"
+          class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-slate-800 border border-slate-700/60 text-slate-400 text-[10px] font-medium"
+        >
+          今日未命中 (0%)
         </span>
       </div>
 
@@ -190,9 +203,38 @@ const completionPct = computed(() => {
         </div>
         <div>
           <div class="text-[10px] text-slate-400 font-sans">缓存命中</div>
-          <div class="font-bold text-emerald-400 mt-0.5">
-            {{ tokenSummary?.cache_hit_tokens ? formatTokens(tokenSummary.cache_hit_tokens) : '--' }}
-          </div>
+          <template v-if="tokenSummary?.supports_cache_stats">
+            <div
+              v-if="tokenSummary.cache_hit_tokens > 0"
+              class="font-bold text-emerald-400 mt-0.5"
+            >
+              {{ formatTokens(tokenSummary.cache_hit_tokens) }}
+            </div>
+            <div
+              v-else-if="(tokenSummary.this_month_cache_hit_tokens ?? 0) > 0"
+              class="font-bold text-slate-300 mt-0.5 flex items-baseline gap-1"
+              :title="`今日未命中，本月累计命中 ${formatTokens(tokenSummary.this_month_cache_hit_tokens ?? 0)}`"
+            >
+              <span>0</span>
+              <span class="text-[9px] text-emerald-400/90 font-sans font-normal">
+                (月 {{ formatTokens(tokenSummary.this_month_cache_hit_tokens ?? 0) }})
+              </span>
+            </div>
+            <div
+              v-else
+              class="font-bold text-slate-400 mt-0.5 text-[11px]"
+            >
+              0 Tokens
+            </div>
+          </template>
+          <template v-else>
+            <div
+              class="text-slate-500 mt-0.5 text-[10px] font-sans font-medium"
+              title="该厂商官方API暂未开放上下文 Prompt Cache 统计"
+            >
+              暂不支持
+            </div>
+          </template>
         </div>
       </div>
     </div>

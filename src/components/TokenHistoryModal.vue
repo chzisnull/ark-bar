@@ -110,8 +110,11 @@ function copyJsonData() {
             <Zap class="w-2.5 h-2.5 text-emerald-400" />
             总缓存节省
           </div>
-          <div class="text-sm font-bold text-emerald-400 font-mono mt-0.5">
-            {{ formatTokens(totalCacheInHistory) }}
+          <div
+            class="mt-0.5"
+            :class="tokenSummary?.supports_cache_stats ? 'text-sm font-bold text-emerald-400 font-mono' : 'text-xs text-slate-500 font-sans font-medium'"
+          >
+            {{ tokenSummary?.supports_cache_stats ? formatTokens(totalCacheInHistory) : '暂不适用' }}
           </div>
         </div>
         <div class="bg-slate-900/60 rounded-lg p-2 border border-slate-800/60">
@@ -186,8 +189,13 @@ function copyJsonData() {
                 <td class="py-2 px-2 text-right text-[10px] text-slate-400 whitespace-nowrap">
                   {{ formatTokens(row.input_tokens) }} / {{ formatTokens(row.output_tokens) }}
                 </td>
-                <td class="py-2 px-2 text-right text-emerald-400/90 whitespace-nowrap">
-                  {{ row.cache_hit_tokens > 0 ? formatTokens(row.cache_hit_tokens) : '--' }}
+                <td class="py-2 px-2 text-right whitespace-nowrap" :class="row.cache_hit_tokens > 0 ? 'text-emerald-400/90' : 'text-slate-600'">
+                  <template v-if="tokenSummary?.supports_cache_stats">
+                    {{ row.cache_hit_tokens > 0 ? formatTokens(row.cache_hit_tokens) : '0' }}
+                  </template>
+                  <template v-else>
+                    -
+                  </template>
                 </td>
                 <td class="py-2 px-2.5 text-right text-slate-400">
                   {{ row.request_count > 0 ? row.request_count : '--' }}

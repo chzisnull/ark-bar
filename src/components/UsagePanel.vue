@@ -463,8 +463,11 @@ function formatShortReset(dateStr?: string): string {
               </span>
             </div>
             <div class="flex items-center gap-1 text-[10px] text-indigo-300 font-medium shrink-0">
-              <span v-if="currentUsage.token_summary.cache_hit_rate > 0" class="text-emerald-400 font-mono">
-                ⚡ 命中 {{ currentUsage.token_summary.cache_hit_rate }}%
+              <span
+                v-if="currentUsage.token_summary.supports_cache_stats && (currentUsage.token_summary.this_month_cache_hit_rate ?? 0) > 0"
+                class="text-emerald-400 font-mono"
+              >
+                ⚡ 缓存命中 {{ currentUsage.token_summary.this_month_cache_hit_rate }}%
               </span>
               <span class="text-slate-500 group-hover:text-slate-300 transition-colors">· 详情 →</span>
             </div>
