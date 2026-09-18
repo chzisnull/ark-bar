@@ -68,8 +68,33 @@ export interface UpdateProgress {
 
 export type ProviderType = 'volcengine' | 'antigravity' | 'grok' | 'codex';
 
-/** 菜单栏百分比显示模式：始终显示 / 仅告警(≥75%或断连)时显示 / 纯图标 */
-export type TrayPercentMode = 'always' | 'alert' | 'never';
+/** 菜单栏显示模式：始终显示配额百分比 / 仅告警(≥75%或断连) / 纯图标 / 今日 Token / 近5小时 Token */
+export type TrayPercentMode = 'always' | 'alert' | 'never' | 'today_tokens' | 'session_tokens';
+
+export interface DailyTokenRecord {
+  date: string;
+  total_tokens: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_hit_tokens: number;
+  request_count: number;
+}
+
+export interface ProviderTokenSummary {
+  session_5h_tokens: number;
+  today_tokens: number;
+  this_week_tokens: number;
+  this_month_tokens: number;
+  total_tokens?: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_hit_tokens: number;
+  cache_hit_rate: number;
+  request_count: number;
+  daily_history: DailyTokenRecord[];
+  data_source_type: string;
+  updated_at: string;
+}
 
 export interface ProviderQuotaPeriod {
   label: string;
@@ -107,4 +132,5 @@ export interface ProviderUsageData {
   primary_session_percent?: number;
   primary_reset_at?: string;
   console_url?: string;
+  token_summary?: ProviderTokenSummary | null;
 }

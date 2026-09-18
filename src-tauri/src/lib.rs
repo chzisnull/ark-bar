@@ -10,6 +10,7 @@ mod provider_codex;
 mod token_store;
 mod provider_manager;
 mod usage_cache;
+pub mod token_stats;
 
 use tauri::Manager;
 use tauri_plugin_positioner::{Position, WindowExt};

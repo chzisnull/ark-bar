@@ -50,7 +50,7 @@ const isAutostartUpdating = ref(false);
 const autostartError = ref('');
 let autostartStatusRequestId = 0;
 const showUpdateModal = ref(false);
-const appVersion = computed(() => updateResult.value?.current_version || props.initialUpdateInfo?.current_version || '0.2.14');
+const appVersion = computed(() => updateResult.value?.current_version || props.initialUpdateInfo?.current_version || '0.3.0');
 
 // Tray Target Provider selection
 const trayTarget = ref<ProviderType | 'auto'>(
@@ -382,23 +382,25 @@ onMounted(async () => {
           <!-- Tray percentage mode -->
           <div class="px-4 py-3 flex items-center gap-3">
             <div class="flex-1 min-w-0">
-              <p class="text-xs font-medium text-white leading-5">菜单栏百分比</p>
+              <p class="text-xs font-medium text-white leading-5">菜单栏指示文本</p>
               <p class="text-[11px] text-slate-500 leading-4 mt-0.5 truncate">
-                {{ trayIconVisible ? '仅告警档在 ≥75% 或断连时显示' : '图标已隐藏' }}
+                {{ trayIconVisible ? '可选择显示配额百分比或 Token 用量' : '图标已隐藏' }}
               </p>
             </div>
-            <div class="w-[128px] h-7 shrink-0 flex items-center justify-end">
+            <div class="w-[136px] h-7 shrink-0 flex items-center justify-end">
               <div class="relative">
                 <select
                   :value="trayPercentMode"
                   :disabled="!trayIconVisible"
                   @change="$emit('update-tray-percent-mode', ($event.target as HTMLSelectElement).value as TrayPercentMode)"
-                  class="h-7 w-[104px] pl-2.5 pr-6 rounded-lg bg-slate-900/70 border border-slate-800/60 text-xs text-slate-200 truncate cursor-pointer outline-none hover:border-slate-700/60 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 appearance-none disabled:opacity-50 disabled:cursor-not-allowed"
+                  class="h-7 w-[130px] pl-2.5 pr-6 rounded-lg bg-slate-900/70 border border-slate-800/60 text-xs text-slate-200 truncate cursor-pointer outline-none hover:border-slate-700/60 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 appearance-none disabled:opacity-50 disabled:cursor-not-allowed"
                   :title="trayIconVisible ? '' : '菜单栏图标已隐藏'"
                 >
-                  <option value="always">始终显示</option>
-                  <option value="alert">仅告警时</option>
-                  <option value="never">不显示</option>
+                  <option value="always">⚡ 配额百分比</option>
+                  <option value="today_tokens">🔥 今日 Token</option>
+                  <option value="session_tokens">⏱️ 5小时 Token</option>
+                  <option value="alert">⚠️ 仅告警时</option>
+                  <option value="never">纯图标 (不显示)</option>
                 </select>
                 <ChevronDown class="w-3 h-3 absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
               </div>

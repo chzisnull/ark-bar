@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted, defineAsyncComponent } from 'vue';
 import type { ProviderType, ProviderUsageData, UpdateInfo, ProviderQuotaPeriod } from '../types';
-import { RefreshCw, Settings, Clock, Sparkles, Download, X, KeyRound, ExternalLink, TriangleAlert } from 'lucide-vue-next';
+import { RefreshCw, Settings, Clock, Sparkles, Download, X, KeyRound, ExternalLink, TriangleAlert, Gauge, Coins } from 'lucide-vue-next';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import TokenStatsCard from './TokenStatsCard.vue';
+import TokenHistoryModal from './TokenHistoryModal.vue';
 
 const UpdateModal = defineAsyncComponent(() => import('./UpdateModal.vue'));
 
@@ -23,6 +25,16 @@ const emit = defineEmits<{
 
 const bannerDismissed = ref(false);
 const showUpdateModal = ref(false);
+const showHistoryModal = ref(false);
+const viewMode = ref<'quota' | 'tokens'>('quota');
+
+function formatTokens(tokens: number): string {
+  if (tokens == null || isNaN(tokens)) return '0';
+  if (tokens >= 1_000_000_000) return `${(tokens / 1_000_000_000).toFixed(2)}B`;
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(2)}M`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}K`;
+  return tokens.toLocaleString();
+}
 
 const providerList: { id: ProviderType; name: string }[] = [
   { id: 'volcengine', name: '火山方舟' },
@@ -350,111 +362,168 @@ function formatShortReset(dateStr?: string): string {
           </span>
         </div>
 
-        <!-- HERO Quota Card -->
-        <div
-          v-if="heroPeriod"
-          class="flex-1 flex flex-col relative overflow-hidden rounded-xl border border-slate-800/60 bg-[#131a2a] p-4"
-          :class="{ 'min-h-[150px]': secondaryPeriods.length > 0 }"
-        >
-          <div class="absolute -right-8 -top-10 w-44 h-44 rounded-full bg-indigo-500/10 blur-3xl pointer-events-none"></div>
-
-          <div
-            v-if="isProviderLoading"
-            class="absolute top-2 right-2 z-10"
+        <!-- Dual Mode Switch Capsule -->
+        <div class="flex items-center p-1 rounded-xl bg-slate-900/80 border border-slate-800/80 shrink-0 gap-1">
+          <button
+            @click="viewMode = 'quota'"
+            class="flex-1 h-7 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+            :class="viewMode === 'quota' ? 'bg-indigo-500/20 text-indigo-100 ring-1 ring-inset ring-indigo-500/40 shadow-sm' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'"
           >
-            <span :class="badgeBrand">
-              <RefreshCw class="w-2.5 h-2.5 animate-spin" />
-              同步中
+            <Gauge class="w-3.5 h-3.5 text-indigo-400" />
+            <span>配额监控</span>
+          </button>
+          <button
+            @click="viewMode = 'tokens'"
+            class="flex-1 h-7 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+            :class="viewMode === 'tokens' ? 'bg-indigo-500/20 text-indigo-100 ring-1 ring-inset ring-indigo-500/40 shadow-sm' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'"
+          >
+            <Coins class="w-3.5 h-3.5 text-amber-400" />
+            <span>Token 统计</span>
+            <span v-if="currentUsage?.token_summary?.today_tokens" class="px-1 py-0.2 text-[9px] rounded-full bg-amber-500/20 text-amber-300 font-mono">
+              {{ formatTokens(currentUsage.token_summary.today_tokens) }}
             </span>
-          </div>
+          </button>
+        </div>
 
-          <!-- Row A: period name + reset badge -->
-          <div class="shrink-0 flex items-center justify-between gap-2">
-            <div class="flex items-center gap-1.5 min-w-0">
-              <span class="w-1.5 h-1.5 rounded-full bg-indigo-400 shrink-0"></span>
-              <span class="text-[11px] font-semibold text-slate-400 truncate">{{ heroPeriod?.name }}</span>
-              <span v-if="currentUsage.groups.length > 1 && heroGroup" class="text-[10px] text-slate-500 truncate">
-                · {{ heroGroup.group_name }}
+        <!-- 1. QUOTA VIEW -->
+        <template v-if="viewMode === 'quota'">
+          <!-- Monthly Token Brief Pill (User Confirmed: 展示配额的时候也简短展示本月已消耗token) -->
+          <div
+            v-if="currentUsage?.token_summary"
+            @click="viewMode = 'tokens'"
+            class="rounded-xl bg-gradient-to-r from-indigo-950/40 via-purple-950/20 to-slate-900/40 border border-indigo-500/25 px-3 py-2 flex items-center justify-between text-xs cursor-pointer hover:border-indigo-500/40 transition group shadow-sm shrink-0"
+            title="点击切换至 Token 详细统计"
+          >
+            <div class="flex items-center gap-2 min-w-0">
+              <Coins class="w-3.5 h-3.5 text-amber-400 shrink-0 group-hover:rotate-12 transition-transform" />
+              <span class="text-slate-300 text-[11px] truncate">
+                本月已消耗 <strong class="text-indigo-200 font-mono font-bold">{{ formatTokens(currentUsage.token_summary.this_month_tokens) }}</strong> Tokens
               </span>
             </div>
-            <span
-              v-if="heroPeriod?.reset_at"
-              :class="badgeNeutral"
-              class="cursor-help hover:text-white transition-colors"
-              :title="`额度刷新时间: ${formatExactTime(heroPeriod.reset_at)}`"
-            >
-              <Clock class="w-2.5 h-2.5 text-indigo-400 shrink-0" />
-              {{ formatDetailedReset(heroPeriod.reset_at) }}
-            </span>
+            <div class="flex items-center gap-1 text-[10px] text-indigo-300 font-medium shrink-0">
+              <span v-if="currentUsage.token_summary.cache_hit_rate > 0" class="text-emerald-400 font-mono">
+                ⚡ 命中 {{ currentUsage.token_summary.cache_hit_rate }}%
+              </span>
+              <span class="text-slate-500 group-hover:text-slate-300 transition-colors">· 详情 →</span>
+            </div>
           </div>
 
-          <!-- Row B: hero number, vertically centered in remaining height -->
-          <div class="flex-1 min-h-0 flex flex-col justify-center gap-1.5 py-2">
-            <div class="flex items-baseline gap-1">
+          <!-- COMPACT HERO Quota Card (User Confirmed: 原本展示的配额空间要缩小) -->
+          <div
+            v-if="heroPeriod"
+            class="flex flex-col relative overflow-hidden rounded-xl border border-slate-800/60 bg-[#131a2a] p-3.5 shrink-0"
+          >
+            <div class="absolute -right-8 -top-10 w-36 h-36 rounded-full bg-indigo-500/10 blur-3xl pointer-events-none"></div>
+
+            <div
+              v-if="isProviderLoading"
+              class="absolute top-2 right-2 z-10"
+            >
+              <span :class="badgeBrand">
+                <RefreshCw class="w-2.5 h-2.5 animate-spin" />
+                同步中
+              </span>
+            </div>
+
+            <!-- Row A: period name + reset badge -->
+            <div class="shrink-0 flex items-center justify-between gap-2">
+              <div class="flex items-center gap-1.5 min-w-0">
+                <span class="w-1.5 h-1.5 rounded-full bg-indigo-400 shrink-0"></span>
+                <span class="text-[11px] font-semibold text-slate-300 truncate">{{ heroPeriod?.name }}</span>
+                <span v-if="currentUsage.groups.length > 1 && heroGroup" class="text-[10px] text-slate-500 truncate">
+                  · {{ heroGroup.group_name }}
+                </span>
+              </div>
               <span
-                class="text-[40px] leading-none font-bold tracking-tight tabular-nums"
-                :class="getTextColor(heroPeriod?.used_percent ?? 0)"
-              >{{ Math.round(heroPeriod?.used_percent ?? 0) }}</span>
-              <span class="text-lg font-bold text-slate-500">%</span>
+                v-if="heroPeriod?.reset_at"
+                :class="badgeNeutral"
+                class="cursor-help hover:text-white transition-colors"
+                :title="`额度刷新时间: ${formatExactTime(heroPeriod.reset_at)}`"
+              >
+                <Clock class="w-2.5 h-2.5 text-indigo-400 shrink-0" />
+                {{ formatDetailedReset(heroPeriod.reset_at) }}
+              </span>
             </div>
-            <div class="text-[11px] text-slate-400">
-              已使用 · 剩余 <span class="text-slate-100 font-semibold">{{ Math.round(heroPeriod?.remaining_percent ?? 0) }}%</span>
-              <span v-if="heroPeriod?.used != null && heroPeriod?.total != null" class="font-mono text-slate-500 ml-1.5">
-                {{ heroPeriod.used }} / {{ heroPeriod.total }}
+
+            <!-- Row B: hero number + remaining (compact layout) -->
+            <div class="flex items-baseline justify-between py-2">
+              <div class="flex items-baseline gap-1">
+                <span
+                  class="text-3xl leading-none font-bold tracking-tight tabular-nums"
+                  :class="getTextColor(heroPeriod?.used_percent ?? 0)"
+                >{{ Math.round(heroPeriod?.used_percent ?? 0) }}</span>
+                <span class="text-base font-bold text-slate-500">%</span>
+              </div>
+              <div class="text-[11px] text-slate-400">
+                已用 · 剩余 <span class="text-slate-100 font-semibold">{{ Math.round(heroPeriod?.remaining_percent ?? 0) }}%</span>
+                <span v-if="heroPeriod?.used != null && heroPeriod?.total != null" class="font-mono text-slate-500 ml-1">
+                  ({{ heroPeriod.used }}/{{ heroPeriod.total }})
+                </span>
+              </div>
+            </div>
+
+            <!-- Row C: progress bar + full-width description -->
+            <div class="shrink-0 space-y-1.5">
+              <div class="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
+                <div
+                  class="h-full rounded-full bg-gradient-to-r transition-all duration-500"
+                  :class="getBarColor(heroPeriod?.used_percent ?? 0)"
+                  :style="{ width: clampPercent(heroPeriod?.used_percent ?? 0) }"
+                ></div>
+              </div>
+              <p v-if="heroPeriod?.description" class="text-[10px] text-slate-500 leading-relaxed">
+                {{ heroPeriod.description }}
+              </p>
+            </div>
+          </div>
+
+          <!-- Secondary Periods (volcengine weekly/monthly etc.) -->
+          <div
+            v-if="secondaryPeriods.length"
+            class="shrink-0 rounded-xl border border-slate-800/60 bg-[#131a2a] divide-y divide-slate-800/60 overflow-hidden"
+          >
+            <div
+              v-for="item in secondaryPeriods"
+              :key="item.key"
+              class="px-4 py-2.5 flex items-center gap-2.5"
+            >
+              <span class="text-xs text-slate-300 flex-1 min-w-0 truncate">
+                <template v-if="item.groupName">{{ item.groupName }} · </template>{{ item.period.name }}
+              </span>
+              <div class="w-14 h-1 rounded-full bg-slate-800 overflow-hidden shrink-0">
+                <div
+                  class="h-full rounded-full bg-gradient-to-r transition-all duration-500"
+                  :class="getBarColor(item.period.used_percent)"
+                  :style="{ width: clampPercent(item.period.used_percent) }"
+                ></div>
+              </div>
+              <span
+                class="w-10 text-right text-xs font-semibold tabular-nums shrink-0"
+                :class="getTextColor(item.period.used_percent)"
+              >{{ Math.round(item.period.used_percent) }}%</span>
+              <span
+                v-if="item.period.reset_at"
+                :class="badgeNeutral"
+                class="shrink-0 cursor-help hover:text-white transition-colors"
+                :title="`额度刷新时间: ${formatExactTime(item.period.reset_at)}`"
+              >
+                <Clock class="w-2.5 h-2.5 text-indigo-400 shrink-0" />
+                {{ formatShortReset(item.period.reset_at) }}
               </span>
             </div>
           </div>
+        </template>
 
-          <!-- Row C: progress bar + full-width description -->
-          <div class="shrink-0 space-y-2">
-            <div class="w-full bg-slate-800 h-2.5 rounded-full overflow-hidden">
-              <div
-                class="h-full rounded-full bg-gradient-to-r transition-all duration-500"
-                :class="getBarColor(heroPeriod?.used_percent ?? 0)"
-                :style="{ width: clampPercent(heroPeriod?.used_percent ?? 0) }"
-              ></div>
-            </div>
-            <p v-if="heroPeriod?.description" class="text-[11px] text-slate-500 leading-relaxed">
-              {{ heroPeriod.description }}
-            </p>
-          </div>
-        </div>
-
-        <!-- Secondary Periods (volcengine weekly/monthly etc.) -->
-        <div
-          v-if="secondaryPeriods.length"
-          class="shrink-0 rounded-xl border border-slate-800/60 bg-[#131a2a] divide-y divide-slate-800/60 overflow-hidden"
-        >
-          <div
-            v-for="item in secondaryPeriods"
-            :key="item.key"
-            class="px-4 py-2.5 flex items-center gap-2.5"
-          >
-            <span class="text-xs text-slate-300 flex-1 min-w-0 truncate">
-              <template v-if="item.groupName">{{ item.groupName }} · </template>{{ item.period.name }}
-            </span>
-            <div class="w-14 h-1 rounded-full bg-slate-800 overflow-hidden shrink-0">
-              <div
-                class="h-full rounded-full bg-gradient-to-r transition-all duration-500"
-                :class="getBarColor(item.period.used_percent)"
-                :style="{ width: clampPercent(item.period.used_percent) }"
-              ></div>
-            </div>
-            <span
-              class="w-10 text-right text-xs font-semibold tabular-nums shrink-0"
-              :class="getTextColor(item.period.used_percent)"
-            >{{ Math.round(item.period.used_percent) }}%</span>
-            <span
-              v-if="item.period.reset_at"
-              :class="badgeNeutral"
-              class="shrink-0 cursor-help hover:text-white transition-colors"
-              :title="`额度刷新时间: ${formatExactTime(item.period.reset_at)}`"
-            >
-              <Clock class="w-2.5 h-2.5 text-indigo-400 shrink-0" />
-              {{ formatShortReset(item.period.reset_at) }}
-            </span>
-          </div>
-        </div>
+        <!-- 2. TOKEN VIEW -->
+        <template v-else>
+          <TokenStatsCard
+            :token-summary="currentUsage?.token_summary"
+            :provider="activeProvider"
+            :provider-name="currentUsage?.provider_name || ''"
+            :is-refreshing="isProviderLoading"
+            @open-history="showHistoryModal = true"
+          />
+        </template>
 
         <!-- Footer Meta: last sync + console link -->
         <div class="shrink-0 mt-auto pt-1 px-1 flex items-center justify-between text-[10px] text-slate-500">
@@ -522,6 +591,15 @@ function formatShortReset(dateStr?: string): string {
       v-if="showUpdateModal && updateInfo"
       :update-info="updateInfo"
       @close="showUpdateModal = false"
+    />
+
+    <!-- Token History Modal -->
+    <TokenHistoryModal
+      :show="showHistoryModal"
+      :token-summary="currentUsage?.token_summary"
+      :provider-name="currentUsage?.provider_name || ''"
+      :provider-icon="currentUsage?.icon || '🌋'"
+      @close="showHistoryModal = false"
     />
   </div>
 </template>

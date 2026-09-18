@@ -187,6 +187,7 @@ fn try_read_local_cached_usage() -> Option<ProviderUsageData> {
                             primary_session_percent,
                             primary_reset_at: None,
                             console_url: Some("https://chatgpt.com".to_string()),
+                            token_summary: crate::token_stats::fetch_codex_token_summary(false),
                         });
                     }
                 }
@@ -314,6 +315,7 @@ fn fetch_codex_usage_uncached(custom_token: Option<&str>) -> ProviderUsageData {
                                 primary_session_percent,
                                 primary_reset_at,
                                 console_url: Some("https://chatgpt.com".to_string()),
+                                token_summary: crate::token_stats::fetch_codex_token_summary(false),
                             };
                             return result;
                         }
@@ -351,5 +353,6 @@ fn fetch_codex_usage_uncached(custom_token: Option<&str>) -> ProviderUsageData {
         primary_session_percent: None,
         primary_reset_at: None,
         console_url: Some("https://chatgpt.com".to_string()),
+        token_summary: crate::token_stats::fetch_codex_token_summary(false),
     }
 }

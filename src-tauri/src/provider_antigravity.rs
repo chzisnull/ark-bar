@@ -121,6 +121,7 @@ fn fetch_antigravity_usage_uncached() -> ProviderUsageData {
                 primary_session_percent: None,
                 primary_reset_at: None,
                 console_url: Some("https://antigravity.google".to_string()),
+                token_summary: None,
             };
         }
     };
@@ -147,6 +148,7 @@ fn fetch_antigravity_usage_uncached() -> ProviderUsageData {
             primary_session_percent: None,
             primary_reset_at: None,
             console_url: Some("https://antigravity.google".to_string()),
+            token_summary: None,
         };
     }
 
@@ -174,6 +176,7 @@ fn fetch_antigravity_usage_uncached() -> ProviderUsageData {
                 primary_session_percent: None,
                 primary_reset_at: None,
                 console_url: Some("https://antigravity.google".to_string()),
+                token_summary: None,
             };
         }
     };
@@ -238,6 +241,17 @@ fn fetch_antigravity_usage_uncached() -> ProviderUsageData {
         }
     }
 
+    let weekly_used = groups
+        .first()
+        .and_then(|g| g.periods.iter().find(|p| p.label == "weekly"))
+        .map(|p| p.used_percent)
+        .unwrap_or(0.0);
+
+    let token_summary = Some(crate::token_stats::create_antigravity_token_summary(
+        primary_session_percent.unwrap_or(0.0),
+        weekly_used,
+    ));
+
     let result = ProviderUsageData {
         provider: "antigravity".to_string(),
         provider_name: "Google Antigravity".to_string(),
@@ -255,6 +269,7 @@ fn fetch_antigravity_usage_uncached() -> ProviderUsageData {
         primary_session_percent,
         primary_reset_at,
         console_url: Some("https://antigravity.google".to_string()),
+        token_summary,
     };
 
     result

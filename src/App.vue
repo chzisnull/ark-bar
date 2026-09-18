@@ -33,7 +33,7 @@ const trayTarget = ref<ProviderType | 'auto'>(
 // 菜单栏百分比显示模式；迁移旧布尔开关 arkbar_tray_percent
 function loadTrayPercentMode(): TrayPercentMode {
   const stored = localStorage.getItem('arkbar_tray_percent_mode');
-  if (stored === 'always' || stored === 'alert' || stored === 'never') return stored;
+  if (stored === 'always' || stored === 'alert' || stored === 'never' || stored === 'today_tokens' || stored === 'session_tokens') return stored;
   return localStorage.getItem('arkbar_tray_percent') === 'false' ? 'never' : 'always';
 }
 
@@ -42,6 +42,13 @@ const trayPercentMode = ref<TrayPercentMode>(loadTrayPercentMode());
 const refreshInterval = ref<number>(
   Number(localStorage.getItem('arkbar_refresh_interval')) || 5
 );
+
+function formatTokensShort(tokens: number): string {
+  if (tokens >= 1_000_000_000) return `${(tokens / 1_000_000_000).toFixed(2)}B`;
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(2)}M`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}K`;
+  return tokens.toLocaleString();
+}
 
 // 0ms startup: hydrate from local cache immediately
 const CACHE_KEY = 'arkbar_cached_providers_data';
@@ -148,12 +155,24 @@ async function handleRefreshCurrent() {
 function computeTrayTitle(target: ProviderType): string {
   if (trayPercentMode.value === 'never') return '';
   const data = providersData.value[target] || providersData.value['volcengine'];
-  const p = data?.primary_session_percent;
+  if (!data) return '';
+
+  if (trayPercentMode.value === 'today_tokens') {
+    if (data.token_summary?.today_tokens != null) {
+      return ` 🔥 ${formatTokensShort(data.token_summary.today_tokens)}`;
+    }
+  } else if (trayPercentMode.value === 'session_tokens') {
+    if (data.token_summary?.session_5h_tokens != null) {
+      return ` ⏱️ ${formatTokensShort(data.token_summary.session_5h_tokens)}`;
+    }
+  }
+
+  const p = data.primary_session_percent;
   if (trayPercentMode.value === 'alert') {
-    if (data && !data.is_connected) return ' ⚠';
+    if (!data.is_connected) return ' ⚠';
     return p != null && p >= 75 ? ` ${Math.round(p)}%` : '';
   }
-  return data?.is_connected && p != null ? ` ${Math.round(p)}%` : '';
+  return data.is_connected && p != null ? ` ${Math.round(p)}%` : '';
 }
 
 function updateTrayTitle() {

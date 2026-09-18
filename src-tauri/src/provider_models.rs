@@ -40,4 +40,46 @@ pub struct ProviderUsageData {
     pub primary_session_percent: Option<f64>,
     pub primary_reset_at: Option<String>,
     pub console_url: Option<String>,
+    pub token_summary: Option<ProviderTokenSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DailyTokenRecord {
+    pub date: String,              // "YYYY-MM-DD"
+    pub total_tokens: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_hit_tokens: u64,
+    pub request_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProviderTokenSummary {
+    /// 近 5 小时用量 (Token)
+    pub session_5h_tokens: u64,
+    /// 今日已用 (Token)
+    pub today_tokens: u64,
+    /// 本周已用 (Token, 周一 00:00 至今)
+    pub this_week_tokens: u64,
+    /// 本月已用 (Token, 当月 1 日 00:00 至今)
+    pub this_month_tokens: u64,
+    /// 累计总 Token (若支持)
+    pub total_tokens: Option<u64>,
+
+    /// 今日/当期详细构成
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_hit_tokens: u64,
+    /// 缓存命中率 (0.0% ~ 100.0%)
+    pub cache_hit_rate: f64,
+    /// API/Agent 请求次数
+    pub request_count: u64,
+
+    /// 历史每日明细 (最近 14~30 天，用于折线/柱状图)
+    pub daily_history: Vec<DailyTokenRecord>,
+
+    /// 数据来源类型: "api" (官方精准API) | "local_logs" (本地日志聚合) | "estimated" (配额折算)
+    pub data_source_type: String,
+    /// 数据更新时间 (ISO 8601)
+    pub updated_at: String,
 }

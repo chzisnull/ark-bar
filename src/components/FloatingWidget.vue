@@ -99,7 +99,14 @@ function getBarColor(percent: number | null): string {
   const p = percent ?? 0;
   if (p >= 90) return 'from-rose-500 to-red-600';
   if (p >= 75) return 'from-amber-500 to-orange-500';
-  return 'from-indigo-500 to-violet-500';
+  return 'from-indigo-500 to-blue-500';
+}
+
+function formatTokensShort(tokens: number): string {
+  if (tokens >= 1_000_000_000) return `${(tokens / 1_000_000_000).toFixed(1)}B`;
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(0)}K`;
+  return String(tokens);
 }
 
 function getTextColor(percent: number | null): string {
@@ -524,8 +531,13 @@ onUnmounted(() => {
       <!-- Center: Progress & Usage -->
       <div class="flex-1 mx-2 flex flex-col justify-center space-y-0.5 pointer-events-none">
         <div class="flex items-center justify-between text-[9px] font-mono leading-none">
-          <span class="text-slate-400 font-sans">
-            {{ primaryProvider === 'grok' ? '周期用量' : '5h用量' }}
+          <span class="text-slate-400 font-sans truncate">
+            <template v-if="currentUsage?.token_summary?.today_tokens">
+              今日 {{ formatTokensShort(currentUsage.token_summary.today_tokens) }}
+            </template>
+            <template v-else>
+              {{ primaryProvider === 'grok' ? '周期用量' : '5h用量' }}
+            </template>
           </span>
           <div class="flex items-center gap-1">
             <span

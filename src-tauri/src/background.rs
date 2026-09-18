@@ -45,6 +45,8 @@ pub fn set_tray_prefs(target: String, percent_mode: String) -> Result<(), String
     let mode = match percent_mode.as_str() {
         "alert" => 1,
         "never" => 2,
+        "today_tokens" => 3,
+        "session_tokens" => 4,
         _ => 0,
     };
     TRAY_PERCENT_MODE.store(mode, Ordering::SeqCst);
@@ -97,15 +99,45 @@ fn refresh_cycle(app: AppHandle) {
 
     for data in get_all_providers_usage() {
         if data.provider == target {
-            let title = if percent_mode == 2 {
-                String::new()
-            } else if !data.is_connected {
-                // 告警模式下断连要在菜单栏可见
-                if percent_mode == 1 { " ⚠".to_string() } else { String::new() }
-            } else {
-                match data.primary_session_percent {
-                    Some(p) if percent_mode == 0 || p >= 75.0 => format!(" {}%", p.round() as i64),
-                    _ => String::new(),
+            let title = match percent_mode {
+                2 => String::new(),
+                3 => {
+                    if let Some(ref ts) = data.token_summary {
+                        format!(" 🔥 {}", crate::token_stats::format_tokens(ts.today_tokens))
+                    } else if let Some(p) = data.primary_session_percent {
+                        format!(" {}%", p.round() as i64)
+                    } else {
+                        String::new()
+                    }
+                }
+                4 => {
+                    if let Some(ref ts) = data.token_summary {
+                        format!(" ⏱️ {}", crate::token_stats::format_tokens(ts.session_5h_tokens))
+                    } else if let Some(p) = data.primary_session_percent {
+                        format!(" {}%", p.round() as i64)
+                    } else {
+                        String::new()
+                    }
+                }
+                1 => {
+                    if !data.is_connected {
+                        " ⚠".to_string()
+                    } else {
+                        match data.primary_session_percent {
+                            Some(p) if p >= 75.0 => format!(" {}%", p.round() as i64),
+                            _ => String::new(),
+                        }
+                    }
+                }
+                _ => {
+                    if !data.is_connected {
+                        String::new()
+                    } else {
+                        match data.primary_session_percent {
+                            Some(p) => format!(" {}%", p.round() as i64),
+                            _ => String::new(),
+                        }
+                    }
                 }
             };
             let _ = tray::update_tray_title(app.clone(), title);
