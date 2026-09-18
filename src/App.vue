@@ -337,6 +337,7 @@ onUnmounted(() => {
       @update-tray-target="trayTarget = $event"
       @re-login="currentView = 'onboarding'"
       @provider-token-updated="handleRefreshCurrent"
+      @update-checked="updateInfo = $event"
       @close="currentView = 'panel'"
     />
   </main>

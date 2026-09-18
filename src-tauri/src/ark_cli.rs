@@ -2,7 +2,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use crate::env_resolver::{execute_cmd, invalidate_arkcli_cache};
+use crate::env_resolver::{execute_cmd, execute_cmd_timeout, invalidate_arkcli_cache};
 use crate::provider_models::{
     ProviderAccountInfo, ProviderPlanGroup, ProviderQuotaPeriod, ProviderUsageData,
 };
@@ -10,6 +10,7 @@ use crate::usage_cache::UsageCache;
 
 static VOLC_CACHE: UsageCache = UsageCache::new();
 static ENV_CACHE: Mutex<Option<(Instant, EnvironmentStatus)>> = Mutex::new(None);
+static UPDATE_CACHE: Mutex<Option<(Instant, UpdateInfo)>> = Mutex::new(None);
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct EnvironmentStatus {
@@ -33,7 +34,7 @@ pub struct CommandResult {
     pub details: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct UpdateInfo {
     pub has_update: bool,
     pub current_version: String,
@@ -783,13 +784,77 @@ fn is_newer_version(latest: &str, current: &str) -> bool {
 }
 
 #[tauri::command]
-pub fn check_for_updates() -> Result<UpdateInfo, String> {
+pub async fn check_for_updates(force: Option<bool>) -> Result<UpdateInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || check_for_updates_sync(force.unwrap_or(false)))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn check_for_updates_sync(force: bool) -> Result<UpdateInfo, String> {
     let current_version = env!("CARGO_PKG_VERSION").to_string();
     let repo = "chzisnull/ark-bar";
-    let api_url = format!("https://api.github.com/repos/{}/releases/latest", repo);
 
-    // 1. Try GitHub Releases API first (gets release notes & tag)
-    if let Ok(output) = execute_cmd("curl", &["-s", "--max-time", "3", "-H", "User-Agent: ark-bar-app", &api_url]) {
+    // 1. If not force, check memory cache (valid for 10 minutes)
+    if !force {
+        if let Ok(guard) = UPDATE_CACHE.lock() {
+            if let Some((cached_at, ref info)) = *guard {
+                if cached_at.elapsed() < Duration::from_secs(600) {
+                    return Ok(info.clone());
+                }
+            }
+        }
+    }
+
+    // 2. Fast check: GitHub Releases 302 redirect
+    // Very fast (only fetches headers, no body parsing) and not subject to GitHub API 60 req/hr limits
+    let redirect_url = format!("https://github.com/{}/releases/latest", repo);
+    let mut detected_tag: Option<String> = None;
+    let mut redirect_release_url: Option<String> = None;
+
+    if let Ok(output) = execute_cmd_timeout(
+        "curl",
+        &["-sI", "--connect-timeout", "3", "--max-time", "5", "-A", "ark-bar-app", &redirect_url],
+        Duration::from_secs(6),
+    ) {
+        let headers = String::from_utf8_lossy(&output.stdout);
+        for line in headers.lines() {
+            let lower = line.to_lowercase();
+            if lower.starts_with("location:") {
+                let loc = line["location:".len()..].trim();
+                if let Some(tag) = loc.split("/tag/").nth(1) {
+                    detected_tag = Some(tag.trim_start_matches('v').to_string());
+                    redirect_release_url = Some(loc.to_string());
+                    break;
+                }
+            }
+        }
+    }
+
+    // Fast return if we know there is NO update!
+    if let Some(ref latest_version) = detected_tag {
+        if !is_newer_version(latest_version, &current_version) {
+            let res = UpdateInfo {
+                has_update: false,
+                current_version: current_version.clone(),
+                latest_version: latest_version.clone(),
+                release_url: redirect_release_url.unwrap_or_else(|| format!("https://github.com/{}/releases", repo)),
+                release_notes: "当前已是最新版本".to_string(),
+                download_url: None,
+            };
+            if let Ok(mut guard) = UPDATE_CACHE.lock() {
+                *guard = Some((Instant::now(), res.clone()));
+            }
+            return Ok(res);
+        }
+    }
+
+    // 3. If there is a newer version (or redirect failed), query GitHub Releases API to get changelog & download asset URL
+    let api_url = format!("https://api.github.com/repos/{}/releases/latest", repo);
+    if let Ok(output) = execute_cmd_timeout(
+        "curl",
+        &["-s", "--connect-timeout", "3", "--max-time", "5", "-H", "User-Agent: ark-bar-app", &api_url],
+        Duration::from_secs(6),
+    ) {
         if output.status.success() {
             let body = String::from_utf8_lossy(&output.stdout);
             if let Ok(json_val) = serde_json::from_str::<Value>(&body) {
@@ -824,56 +889,59 @@ pub fn check_for_updates() -> Result<UpdateInfo, String> {
                         }
                     }
 
-                    return Ok(UpdateInfo {
+                    let res = UpdateInfo {
                         has_update,
                         current_version,
                         latest_version,
                         release_url,
                         release_notes,
                         download_url,
-                    });
+                    };
+                    if let Ok(mut guard) = UPDATE_CACHE.lock() {
+                        *guard = Some((Instant::now(), res.clone()));
+                    }
+                    return Ok(res);
                 }
             }
         }
     }
 
-    // 2. Fallback: GitHub Releases redirect (bypasses 60 req/hr API limit)
-    let redirect_url = format!("https://github.com/{}/releases/latest", repo);
-    if let Ok(output) = execute_cmd("curl", &["-sI", "--max-time", "3", "-A", "ark-bar-app", &redirect_url]) {
-        let headers = String::from_utf8_lossy(&output.stdout);
-        for line in headers.lines() {
-            let lower = line.to_lowercase();
-            if lower.starts_with("location:") {
-                let loc = line["location:".len()..].trim();
-                if let Some(tag) = loc.split("/tag/").nth(1) {
-                    let latest_version = tag.trim_start_matches('v').to_string();
-                    let has_update = is_newer_version(&latest_version, &current_version);
-                    let asset_file = crate::updater::get_platform_asset_filename(&latest_version);
-                    let download_url = Some(format!(
-                        "https://github.com/{}/releases/download/v{}/{}",
-                        repo, latest_version, asset_file
-                    ));
-                    return Ok(UpdateInfo {
-                        has_update,
-                        current_version,
-                        latest_version,
-                        release_url: loc.to_string(),
-                        release_notes: "发现新版本，支持应用内一键在线极速更新。".to_string(),
-                        download_url,
-                    });
-                }
-            }
+    // 4. Fallback if API was blocked/rate-limited but redirect provided a tag
+    if let Some(latest_version) = detected_tag {
+        let has_update = is_newer_version(&latest_version, &current_version);
+        let asset_file = crate::updater::get_platform_asset_filename(&latest_version);
+        let download_url = Some(format!(
+            "https://github.com/{}/releases/download/v{}/{}",
+            repo, latest_version, asset_file
+        ));
+        let res = UpdateInfo {
+            has_update,
+            current_version,
+            latest_version,
+            release_url: redirect_release_url.unwrap_or_else(|| format!("https://github.com/{}/releases", repo)),
+            release_notes: if has_update {
+                "发现新版本，支持应用内一键在线极速更新。".to_string()
+            } else {
+                "当前已是最新版本".to_string()
+            },
+            download_url,
+        };
+        if let Ok(mut guard) = UPDATE_CACHE.lock() {
+            *guard = Some((Instant::now(), res.clone()));
         }
+        return Ok(res);
     }
 
-    Ok(UpdateInfo {
+    // 5. Final fallback (e.g. completely offline)
+    let res = UpdateInfo {
         has_update: false,
         current_version: current_version.clone(),
         latest_version: current_version,
         release_url: format!("https://github.com/{}/releases", repo),
         release_notes: "当前已是最新版本".to_string(),
         download_url: None,
-    })
+    };
+    Ok(res)
 }
 
 #[cfg(test)]

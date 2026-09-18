@@ -28,6 +28,12 @@ const showUpdateModal = ref(false);
 const showHistoryModal = ref(false);
 const viewMode = ref<'quota' | 'tokens'>('quota');
 
+watch(() => props.updateInfo, (val) => {
+  if (val?.has_update) {
+    bannerDismissed.value = false;
+  }
+});
+
 function formatTokens(tokens: number): string {
   if (tokens == null || isNaN(tokens)) return '0';
   if (tokens >= 1_000_000_000) return `${(tokens / 1_000_000_000).toFixed(2)}B`;
@@ -277,10 +283,14 @@ function formatShortReset(dateStr?: string): string {
         </button>
         <button
           @click="$emit('open-settings')"
-          class="w-7 h-7 rounded-lg grid place-items-center text-slate-400 hover:text-white hover:bg-slate-800/80 transition-colors"
+          class="relative w-7 h-7 rounded-lg grid place-items-center text-slate-400 hover:text-white hover:bg-slate-800/80 transition-colors"
           title="设置"
         >
           <Settings class="w-3.5 h-3.5" />
+          <span
+            v-if="updateInfo?.has_update"
+            class="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse ring-2 ring-[#141b2d]"
+          ></span>
         </button>
       </div>
     </div>
