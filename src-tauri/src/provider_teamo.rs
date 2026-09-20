@@ -75,12 +75,40 @@ fn curl_get(path: &str, token: &str) -> Result<Value, String> {
     Ok(json)
 }
 
+fn parse_decimal(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(number) => number.as_f64(),
+        Value::String(text) => text.trim().parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
+/// TeamoRouter 的金额字段有两种返回形态：
+/// - 简版：`"85.32"` / `85.32`
+/// - 现网版：`{"value":"4.67380993","currency":"USD"}`
+/// 只认字符串会让余额与今日费用恒为 `None`，前端两张卡片一直显示 `--`。
 fn parse_amount(value: Option<&Value>) -> Option<ProviderAmount> {
-    let value = value?.as_str()?.parse::<f64>().ok()?;
-    Some(ProviderAmount {
-        value,
-        currency: "USD".to_string(),
-    })
+    let value = value?;
+    match value {
+        Value::Object(map) => {
+            let amount = parse_decimal(map.get("value")?)?;
+            let currency = map
+                .get("currency")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|currency| !currency.is_empty())
+                .unwrap_or("USD")
+                .to_string();
+            Some(ProviderAmount {
+                value: amount,
+                currency,
+            })
+        }
+        _ => Some(ProviderAmount {
+            value: parse_decimal(value)?,
+            currency: "USD".to_string(),
+        }),
+    }
 }
 
 fn now_epoch() -> u64 {
@@ -262,6 +290,34 @@ mod tests {
     }
 
     #[test]
+    fn parse_amount_parses_wrapped_objects() {
+        let amount = parse_amount(Some(&serde_json::json!({
+            "value": "4.67380993",
+            "currency": "USD"
+        })))
+        .expect("现网对象形态必须能解析");
+        assert_eq!(amount.value, 4.67380993);
+        assert_eq!(amount.currency, "USD");
+    }
+
+    #[test]
+    fn parse_amount_parses_numbers_and_defaults_currency() {
+        let amount = parse_amount(Some(&serde_json::json!(0.32599507))).unwrap();
+        assert_eq!(amount.value, 0.32599507);
+        assert_eq!(amount.currency, "USD");
+
+        let wrapped = parse_amount(Some(&serde_json::json!({ "value": 12.5 }))).unwrap();
+        assert_eq!(wrapped.currency, "USD");
+    }
+
+    #[test]
+    fn parse_amount_rejects_unparsable_payloads() {
+        assert!(parse_amount(None).is_none());
+        assert!(parse_amount(Some(&serde_json::json!({ "currency": "USD" }))).is_none());
+        assert!(parse_amount(Some(&serde_json::json!("not-a-number"))).is_none());
+    }
+
+    #[test]
     fn missing_token_is_disconnected() {
         let data = fetch_teamo_usage_uncached(None);
         assert!(!data.is_connected);
@@ -274,5 +330,16 @@ mod tests {
         };
         let data = fetch_teamo_usage_uncached(Some(&token));
         assert!(data.is_connected, "error: {:?}", data.error_message);
+        // 余额与今日费用必须真正落到 extension 上，否则前端两张卡片只会显示 `--`。
+        assert!(
+            data.extension.balance.is_some(),
+            "余额解析为空，status: {:?}",
+            data.status_message
+        );
+        assert!(
+            data.extension.today_cost.is_some(),
+            "今日费用解析为空，status: {:?}",
+            data.status_message
+        );
     }
 }
