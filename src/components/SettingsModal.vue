@@ -33,6 +33,7 @@ const localTabs = ref<ProviderTabConfig[]>(
     { id: 'antigravity', name: 'Antigravity', visible: true },
     { id: 'grok', name: 'Grok', visible: true },
     { id: 'codex', name: 'Codex', visible: true },
+    { id: 'teamo', name: 'Teamo', visible: true },
   ]
 );
 
@@ -88,6 +89,12 @@ function getProviderMeta(id: ProviderType) {
         title: 'OpenAI Codex',
         sub: '自动识别，无需配置',
       };
+    case 'teamo':
+      return {
+        icon: '🛰️',
+        title: 'TeamoRouter',
+        sub: '填入 sk-teamo- API Key',
+      };
   }
 }
 
@@ -120,6 +127,12 @@ const isAutostartEnabled = ref<boolean | null>(null);
 const isAutostartLoading = ref(false);
 const isAutostartUpdating = ref(false);
 const autostartError = ref('');
+const hasTeamoToken = ref(false);
+const teamoTokenInput = ref('');
+const teamoTokenVisible = ref(false);
+const teamoTokenSaving = ref(false);
+const teamoTokenMessage = ref('');
+const showTeamoTokenSection = ref(false);
 let autostartStatusRequestId = 0;
 const showUpdateModal = ref(false);
 const appVersion = computed(() => updateResult.value?.current_version || props.initialUpdateInfo?.current_version || '0.3.2');
@@ -272,10 +285,32 @@ async function handleQuit() {
   window.close();
 }
 
+async function saveTeamoToken() {
+  if (teamoTokenSaving.value) return;
+  const token = teamoTokenInput.value.trim();
+  teamoTokenSaving.value = true;
+  teamoTokenMessage.value = '';
+  try {
+    await invoke('set_provider_token', { provider: 'teamo', token });
+    hasTeamoToken.value = !!token;
+    teamoTokenInput.value = '';
+    showTeamoTokenSection.value = false;
+    teamoTokenMessage.value = token ? 'TeamoRouter API Key 已保存' : 'TeamoRouter API Key 已清除';
+    emit('provider-token-updated');
+  } catch (err) {
+    teamoTokenMessage.value = formatAutostartError(err);
+  } finally {
+    teamoTokenSaving.value = false;
+  }
+}
+
 onMounted(async () => {
   void loadAutostartStatus();
   try {
     isFloatOpen.value = await invoke<boolean>('is_float_window_open');
+  } catch {}
+  try {
+    hasTeamoToken.value = !!(await invoke<string | null>('read_provider_token', { provider: 'teamo' }));
   } catch {}
 });
 </script>
@@ -431,6 +466,67 @@ onMounted(async () => {
               <template v-else-if="item.id === 'codex'">
                 <span class="text-[10px] font-mono text-slate-500 text-right truncate" title="自动识别 ~/.codex/auth.json">读取 ~/.codex</span>
               </template>
+              <template v-else-if="item.id === 'teamo'">
+                <button
+                  v-if="!hasTeamoToken"
+                  type="button"
+                  @click="showTeamoTokenSection = true"
+                  class="w-full h-7 rounded-lg bg-sky-600/80 hover:bg-sky-500 text-white text-[11px] font-medium transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  配置 Key
+                </button>
+                <span v-else class="flex items-center gap-1 text-[10px] font-mono text-emerald-400">
+                  <CheckCircle2 class="w-3.5 h-3.5 shrink-0" />
+                  已配置
+                </span>
+              </template>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section v-if="showTeamoTokenSection">
+        <div class="flex items-center justify-between px-0.5 mb-2">
+          <span class="text-[11px] font-semibold text-slate-400">TeamoRouter API Key</span>
+        </div>
+        <div class="rounded-xl border border-slate-800/60 bg-[#131a2a] p-3 space-y-2">
+          <div class="relative">
+            <input
+              v-model="teamoTokenInput"
+              :type="teamoTokenVisible ? 'text' : 'password'"
+              placeholder="sk-teamo-..."
+              autocomplete="off"
+              spellcheck="false"
+              class="h-8 w-full rounded-lg bg-slate-900/70 border border-slate-800/60 pl-2.5 pr-9 text-xs text-slate-200 placeholder:text-slate-500 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30"
+            />
+            <button
+              type="button"
+              @click="teamoTokenVisible = !teamoTokenVisible"
+              class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-200 transition-colors"
+              :title="teamoTokenVisible ? '隐藏 Key' : '显示 Key'"
+            >
+              <Eye v-if="!teamoTokenVisible" class="w-3.5 h-3.5" />
+              <EyeOff v-else class="w-3.5 h-3.5" />
+            </button>
+          </div>
+          <div class="flex items-center justify-between gap-2">
+            <span class="text-[10px] text-slate-500 truncate">{{ teamoTokenMessage || 'Key 保存在 ~/.ark-bar/tokens.json' }}</span>
+            <div class="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                @click="showTeamoTokenSection = false"
+                class="h-7 px-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] transition-colors cursor-pointer"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                @click="saveTeamoToken"
+                :disabled="teamoTokenSaving"
+                class="h-7 px-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white text-[11px] font-medium transition-colors cursor-pointer"
+              >
+                {{ teamoTokenSaving ? '保存中...' : '保存' }}
+              </button>
             </div>
           </div>
         </div>
@@ -479,6 +575,7 @@ onMounted(async () => {
                   <option value="grok">xAI Grok</option>
                   <option value="antigravity">Antigravity</option>
                   <option value="codex">Codex</option>
+                  <option value="teamo">Teamo</option>
                 </select>
                 <ChevronDown class="w-3 h-3 absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
               </div>
@@ -501,6 +598,7 @@ onMounted(async () => {
                   <option value="antigravity">Antigravity</option>
                   <option value="grok">Grok</option>
                   <option value="codex">Codex</option>
+                  <option value="teamo">Teamo</option>
                   <option value="auto">跟随当前</option>
                 </select>
                 <ChevronDown class="w-3 h-3 absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />

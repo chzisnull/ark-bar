@@ -66,7 +66,7 @@ export interface UpdateProgress {
   message: string;
 }
 
-export type ProviderType = 'volcengine' | 'antigravity' | 'grok' | 'codex';
+export type ProviderType = 'volcengine' | 'antigravity' | 'grok' | 'codex' | 'teamo';
 
 export interface ProviderTabConfig {
   id: ProviderType;
@@ -103,6 +103,17 @@ export interface ProviderTokenSummary {
   daily_history: DailyTokenRecord[];
   data_source_type: string;
   updated_at: string;
+}
+
+export interface ProviderAmount {
+  value: number;
+  currency: string;
+}
+
+export interface ProviderUsageDataExtension {
+  balance?: ProviderAmount | null;
+  today_cost?: ProviderAmount | null;
+  month_cost?: ProviderAmount | null;
 }
 
 export interface ProviderQuotaPeriod {
@@ -142,4 +153,5 @@ export interface ProviderUsageData {
   primary_reset_at?: string;
   console_url?: string;
   token_summary?: ProviderTokenSummary | null;
+  extension?: ProviderUsageDataExtension;
 }

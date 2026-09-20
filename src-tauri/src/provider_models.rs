@@ -1,6 +1,19 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderAmount {
+    pub value: f64,
+    pub currency: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ProviderUsageDataExtension {
+    pub balance: Option<ProviderAmount>,
+    pub today_cost: Option<ProviderAmount>,
+    pub month_cost: Option<ProviderAmount>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderQuotaPeriod {
     pub label: String,            // "session" | "weekly" | "monthly"
     pub name: String,             // Display label: "近5小时用量", "Gemini 5小时限额", etc.
@@ -41,6 +54,7 @@ pub struct ProviderUsageData {
     pub primary_reset_at: Option<String>,
     pub console_url: Option<String>,
     pub token_summary: Option<ProviderTokenSummary>,
+    pub extension: ProviderUsageDataExtension,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

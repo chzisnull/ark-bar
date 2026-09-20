@@ -656,6 +656,7 @@ fn fetch_volcengine_usage_uncached(force: bool) -> ProviderUsageData {
                 primary_reset_at,
                 console_url: Some("https://console.volcengine.com/ark/region:cn-beijing/subscription/coding-plan-enterprise".to_string()),
                 token_summary: crate::token_stats::fetch_volcengine_token_summary(force),
+                extension: Default::default(),
             };
 
             result
@@ -727,6 +728,7 @@ fn fetch_volcengine_usage_uncached(force: bool) -> ProviderUsageData {
                     primary_reset_at: milestones.short_term_reset,
                     console_url: Some("https://console.volcengine.com/ark/region:cn-beijing/subscription/coding-plan-enterprise".to_string()),
                     token_summary: crate::token_stats::fetch_volcengine_token_summary(false),
+                    extension: Default::default(),
                 };
 
                 return result;
@@ -760,6 +762,7 @@ fn fetch_volcengine_usage_uncached(force: bool) -> ProviderUsageData {
                 primary_reset_at: None,
                 console_url: Some("https://console.volcengine.com/ark/region:cn-beijing/subscription/coding-plan-enterprise".to_string()),
                 token_summary: None,
+                extension: Default::default(),
             }
         }
     }

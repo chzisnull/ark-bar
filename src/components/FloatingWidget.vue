@@ -13,6 +13,7 @@ const allProvidersList: { id: ProviderType; name: string; icon: string }[] = [
   { id: 'grok', name: 'xAI Grok', icon: '⚡' },
   { id: 'antigravity', name: 'Antigravity', icon: '🌐' },
   { id: 'codex', name: 'Codex', icon: '🤖' },
+  { id: 'teamo', name: 'Teamo', icon: '🛰️' },
 ];
 
 function loadAllCachedData(): Record<ProviderType, ProviderUsageData | null> {
@@ -21,6 +22,7 @@ function loadAllCachedData(): Record<ProviderType, ProviderUsageData | null> {
     antigravity: null,
     grok: null,
     codex: null,
+    teamo: null,
   };
   try {
     const raw = localStorage.getItem(CACHE_KEY);

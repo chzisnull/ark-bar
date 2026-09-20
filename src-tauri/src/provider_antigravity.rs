@@ -122,6 +122,7 @@ fn fetch_antigravity_usage_uncached() -> ProviderUsageData {
                 primary_reset_at: None,
                 console_url: Some("https://antigravity.google".to_string()),
                 token_summary: None,
+                extension: Default::default(),
             };
         }
     };
@@ -149,6 +150,7 @@ fn fetch_antigravity_usage_uncached() -> ProviderUsageData {
             primary_reset_at: None,
             console_url: Some("https://antigravity.google".to_string()),
             token_summary: None,
+            extension: Default::default(),
         };
     }
 
@@ -177,6 +179,7 @@ fn fetch_antigravity_usage_uncached() -> ProviderUsageData {
                 primary_reset_at: None,
                 console_url: Some("https://antigravity.google".to_string()),
                 token_summary: None,
+                extension: Default::default(),
             };
         }
     };
@@ -270,6 +273,7 @@ fn fetch_antigravity_usage_uncached() -> ProviderUsageData {
         primary_reset_at,
         console_url: Some("https://antigravity.google".to_string()),
         token_summary,
+        extension: Default::default(),
     };
 
     result

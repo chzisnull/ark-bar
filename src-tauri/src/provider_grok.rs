@@ -108,6 +108,7 @@ fn fetch_grok_usage_uncached(custom_token: Option<&str>) -> ProviderUsageData {
                 primary_reset_at: None,
                 console_url: Some("https://grok.com".to_string()),
                 token_summary: None,
+                extension: Default::default(),
             };
         }
     };
@@ -150,6 +151,7 @@ fn fetch_grok_usage_uncached(custom_token: Option<&str>) -> ProviderUsageData {
                 primary_reset_at: None,
                 console_url: Some("https://grok.com".to_string()),
                 token_summary: None,
+                extension: Default::default(),
             };
         }
     };
@@ -174,6 +176,7 @@ fn fetch_grok_usage_uncached(custom_token: Option<&str>) -> ProviderUsageData {
             primary_reset_at: None,
             console_url: Some("https://grok.com".to_string()),
             token_summary: None,
+            extension: Default::default(),
         };
     }
 
@@ -199,6 +202,7 @@ fn fetch_grok_usage_uncached(custom_token: Option<&str>) -> ProviderUsageData {
                 primary_reset_at: None,
                 console_url: Some("https://grok.com".to_string()),
                 token_summary: None,
+                extension: Default::default(),
             };
         }
     };
@@ -223,6 +227,7 @@ fn fetch_grok_usage_uncached(custom_token: Option<&str>) -> ProviderUsageData {
             primary_reset_at: None,
             console_url: Some("https://grok.com".to_string()),
             token_summary: None,
+            extension: Default::default(),
         };
     }
 
@@ -309,6 +314,7 @@ fn fetch_grok_usage_uncached(custom_token: Option<&str>) -> ProviderUsageData {
             on_demand_val,
             used_percent,
         )),
+        extension: Default::default(),
     };
 
     result

@@ -22,6 +22,7 @@ tauri-plugin-autostart = "2.5.1"
 tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 # macOS-only: NSProcessInfo activity to opt out of App Nap (kept in lockstep
 # with the objc2-foundation version already in Tauri's dependency tree)

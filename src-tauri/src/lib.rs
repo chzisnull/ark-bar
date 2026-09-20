@@ -7,6 +7,7 @@ mod provider_models;
 mod provider_antigravity;
 mod provider_grok;
 mod provider_codex;
+mod provider_teamo;
 mod token_store;
 mod provider_manager;
 mod usage_cache;

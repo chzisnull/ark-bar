@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted, defineAsyncComponent } from 'vue';
-import type { ProviderType, ProviderUsageData, UpdateInfo, ProviderQuotaPeriod, ProviderTabConfig } from '../types';
+import type { ProviderAmount, ProviderType, ProviderUsageData, UpdateInfo, ProviderQuotaPeriod, ProviderTabConfig } from '../types';
 import { RefreshCw, Settings, Clock, Sparkles, Download, X, KeyRound, ExternalLink, TriangleAlert, Gauge, Coins } from 'lucide-vue-next';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import TokenStatsCard from './TokenStatsCard.vue';
@@ -165,6 +165,14 @@ const syncAgoLabel = computed(() => {
   const d = new Date(ts);
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 });
+
+function formatCurrency(amount?: ProviderAmount | null): string {
+  if (!amount) return '--';
+  return `${amount.currency === 'USD' ? '$' : `${amount.currency} `}${amount.value.toFixed(4).replace(/\.?0+$/, '')}`;
+}
+
+const teamoBalance = computed(() => currentUsage.value?.extension?.balance ?? null);
+const teamoTodayCost = computed(() => currentUsage.value?.extension?.today_cost ?? null);
 
 function getBarColor(percent: number): string {
   if (percent >= 90) return 'from-rose-500 to-red-600';
@@ -422,6 +430,20 @@ function formatShortReset(dateStr?: string): string {
             <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
             生效中
           </span>
+        </div>
+
+        <div
+          v-if="activeProvider === 'teamo' && (teamoBalance || teamoTodayCost)"
+          class="grid grid-cols-2 gap-2.5 shrink-0"
+        >
+          <div class="rounded-xl border border-slate-800/60 bg-[#131a2a] p-3">
+            <div class="text-[11px] font-medium text-slate-300">账户余额</div>
+            <div class="mt-1 text-xl font-bold text-emerald-300 font-mono">{{ formatCurrency(teamoBalance) }}</div>
+          </div>
+          <div class="rounded-xl border border-slate-800/60 bg-[#131a2a] p-3">
+            <div class="text-[11px] font-medium text-slate-300">今日费用</div>
+            <div class="mt-1 text-xl font-bold text-indigo-200 font-mono">{{ formatCurrency(teamoTodayCost) }}</div>
+          </div>
         </div>
 
         <!-- Dual Mode Switch Capsule -->

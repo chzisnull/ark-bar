@@ -20,6 +20,7 @@ const loadingMap = ref<Record<ProviderType, boolean>>({
   antigravity: false,
   grok: false,
   codex: false,
+  teamo: false,
 });
 
 const DEFAULT_PROVIDER_TABS: ProviderTabConfig[] = [
@@ -27,6 +28,7 @@ const DEFAULT_PROVIDER_TABS: ProviderTabConfig[] = [
   { id: 'antigravity', name: 'Antigravity', visible: true },
   { id: 'grok', name: 'Grok', visible: true },
   { id: 'codex', name: 'Codex', visible: true },
+  { id: 'teamo', name: 'Teamo', visible: true },
 ];
 
 function loadProviderTabsConfig(): ProviderTabConfig[] {
@@ -37,12 +39,13 @@ function loadProviderTabsConfig(): ProviderTabConfig[] {
     if (!Array.isArray(parsed)) return DEFAULT_PROVIDER_TABS;
 
     const result: ProviderTabConfig[] = [];
-    const validIds: ProviderType[] = ['volcengine', 'antigravity', 'grok', 'codex'];
+    const validIds: ProviderType[] = ['volcengine', 'antigravity', 'grok', 'codex', 'teamo'];
     const nameMap: Record<ProviderType, string> = {
       volcengine: '火山方舟',
       antigravity: 'Antigravity',
       grok: 'Grok',
       codex: 'Codex',
+      teamo: 'Teamo',
     };
 
     for (const item of parsed) {
@@ -120,6 +123,7 @@ function loadCachedProviders(): Record<ProviderType, ProviderUsageData | null> {
     antigravity: null,
     grok: null,
     codex: null,
+    teamo: null,
   };
   try {
     const raw = localStorage.getItem(CACHE_KEY);
