@@ -433,7 +433,7 @@ function formatShortReset(dateStr?: string): string {
         </div>
 
         <div
-          v-if="activeProvider === 'teamo' && (teamoBalance || teamoTodayCost)"
+          v-if="activeProvider === 'teamo'"
           class="grid grid-cols-2 gap-2.5 shrink-0"
         >
           <div class="rounded-xl border border-slate-800/60 bg-[#131a2a] p-3">

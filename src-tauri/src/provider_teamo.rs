@@ -221,13 +221,13 @@ fn fetch_teamo_usage_uncached(custom_token: Option<&str>) -> ProviderUsageData {
         output_tokens: today_usage.output_tokens,
         cache_hit_tokens: today_usage.cached_read_tokens,
         cache_hit_rate: if today_usage.total_tokens > 0 {
-            today_usage.cached_read_tokens as f64 * 100.0 / today_usage.total_tokens as f64
+            ((today_usage.cached_read_tokens as f64 * 100.0 / today_usage.total_tokens as f64) * 10.0).round() / 10.0
         } else {
             0.0
         },
         this_month_cache_hit_tokens: month_usage.cached_read_tokens,
         this_month_cache_hit_rate: if month_usage.total_tokens > 0 {
-            month_usage.cached_read_tokens as f64 * 100.0 / month_usage.total_tokens as f64
+            ((month_usage.cached_read_tokens as f64 * 100.0 / month_usage.total_tokens as f64) * 10.0).round() / 10.0
         } else {
             0.0
         },
