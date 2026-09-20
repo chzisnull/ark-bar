@@ -16,6 +16,7 @@ const TEAMO_BASE_URL: &str = "https://teamorouter.cn";
 struct TeamoUsageTotals {
     input_tokens: u64,
     output_tokens: u64,
+    #[allow(dead_code)]
     cached_write_tokens: u64,
     cached_read_tokens: u64,
     total_tokens: u64,
@@ -52,17 +53,24 @@ fn curl_get(path: &str, token: &str) -> Result<Value, String> {
     )
     .map_err(|e| format!("执行 curl 失败: {}", e))?;
 
-    let status = output.status.code().unwrap_or(0);
     let stdout = String::from_utf8_lossy(&output.stdout);
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "curl 退出码 {:?}: {}",
+            output.status.code(),
+            stderr.trim()
+        ));
+    }
     let json: Value = serde_json::from_str(stdout.trim())
         .map_err(|e| format!("JSON 解析失败: {}, 返回: {}", e, stdout.chars().take(200).collect::<String>()))?;
 
-    if !(200..300).contains(&status) {
-        let message = json
-            .pointer("/error/message")
-            .and_then(Value::as_str)
-            .unwrap_or("TeamoRouter 请求失败");
-        return Err(format!("HTTP {}: {}", status, message));
+    if let Some(message) = json.pointer("/error/message").and_then(Value::as_str) {
+        let code = json
+            .pointer("/error/code")
+            .and_then(Value::as_i64)
+            .unwrap_or_default();
+        return Err(format!("TeamoRouter API {}: {}", code, message));
     }
     Ok(json)
 }
@@ -257,5 +265,14 @@ mod tests {
     fn missing_token_is_disconnected() {
         let data = fetch_teamo_usage_uncached(None);
         assert!(!data.is_connected);
+    }
+
+    #[test]
+    fn configured_token_connects_when_env_present() {
+        let Ok(token) = std::env::var("TEAMO_TEST_TOKEN") else {
+            return;
+        };
+        let data = fetch_teamo_usage_uncached(Some(&token));
+        assert!(data.is_connected, "error: {:?}", data.error_message);
     }
 }
