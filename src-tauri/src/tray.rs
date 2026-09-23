@@ -10,6 +10,7 @@ use tauri_plugin_positioner::{Position, WindowExt};
 
 static FLOAT_PLACED: AtomicBool = AtomicBool::new(false);
 static LAST_TRAY_TITLE: Mutex<String> = Mutex::new(String::new());
+static NOTCH_EDGE: Mutex<String> = Mutex::new(String::new());
 
 pub fn show_settings_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -23,7 +24,14 @@ pub fn reveal_float_window(window: &WebviewWindow) {
     // Only snap to the default corner the first time. After the user drags
     // the widget, keep that position across hide/show and size changes.
     if !FLOAT_PLACED.swap(true, Ordering::SeqCst) {
-        let _ = window.move_window(Position::RightCenter);
+        let edge = NOTCH_EDGE.lock().map(|g| g.clone()).unwrap_or_else(|_| "right".into());
+        if edge == "top" {
+            let _ = window.set_size(tauri::LogicalSize::new(700.0, 480.0));
+            let _ = window.move_window(Position::TopCenter);
+        } else {
+            let _ = window.set_size(tauri::LogicalSize::new(440.0, 680.0));
+            let _ = window.move_window(Position::RightCenter);
+        }
     }
     let _ = window.show();
     let _ = window.set_focus();
@@ -260,5 +268,42 @@ pub fn set_main_window_size(app: AppHandle, width: f64, height: f64) -> Result<(
     }
     Ok(())
 }
+
+#[tauri::command]
+pub fn set_notch_edge(app: AppHandle, edge: String) -> Result<(), String> {
+    if let Ok(mut lock) = NOTCH_EDGE.lock() {
+        *lock = edge.clone();
+    }
+    if let Some(window) = app.get_webview_window("float") {
+        if edge == "top" {
+            let _ = window.set_size(tauri::LogicalSize::new(700.0, 480.0));
+            let _ = window.move_window(Position::TopCenter);
+        } else {
+            let _ = window.set_size(tauri::LogicalSize::new(440.0, 680.0));
+            let _ = window.move_window(Position::RightCenter);
+        }
+        FLOAT_PLACED.store(true, Ordering::SeqCst);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn recentre_notch(app: AppHandle, edge: Option<String>) -> Result<(), String> {
+    let current_edge = edge.unwrap_or_else(|| {
+        NOTCH_EDGE.lock().map(|g| g.clone()).unwrap_or_else(|_| "right".into())
+    });
+    if let Some(window) = app.get_webview_window("float") {
+        if current_edge == "top" {
+            let _ = window.set_size(tauri::LogicalSize::new(700.0, 480.0));
+            let _ = window.move_window(Position::TopCenter);
+        } else {
+            let _ = window.set_size(tauri::LogicalSize::new(440.0, 680.0));
+            let _ = window.move_window(Position::RightCenter);
+        }
+        FLOAT_PLACED.store(true, Ordering::SeqCst);
+    }
+    Ok(())
+}
+
 
 

@@ -95,6 +95,12 @@ const notchMode = ref<'hover' | 'always' | 'hidden'>(
   (localStorage.getItem('arkbar_notch_mode') as any) || 'hover'
 );
 
+// Edge placement: 'right' (default) | 'top'
+export type NotchEdge = 'right' | 'top';
+const notchEdge = ref<NotchEdge>(
+  (localStorage.getItem('arkbar_notch_edge') as NotchEdge) || 'right'
+);
+
 // Folded state: default true if in hover mode (rest pill shown, expands on mouseover)
 const isFolded = ref<boolean>(notchMode.value === 'hover');
 let foldTimer: any = null;
@@ -128,6 +134,8 @@ const cardRef = ref<HTMLElement | null>(null);
 const activeHoverId = ref<ProviderType | null>(null);
 const cardTop = ref(40);
 const tailTop = ref(60);
+const cardLeft = ref(100);
+const tailLeft = ref(150);
 
 // Handles hover states
 const isHoveringMove = ref(false);
@@ -187,37 +195,67 @@ function reportHot() {
   const H = window.innerHeight;
 
   if (isFolded.value) {
-    const pillH = 79;
-    const r = [
-      (W - 10 - WAKE_BAND) * k,
-      (H / 2 - pillH / 2 - 20) * k,
-      (10 + WAKE_BAND + 15) * k,
-      (pillH + 40) * k,
-    ];
-    invoke('set_hot', { rects: [r], expanded: false }).catch(() => {});
+    if (notchEdge.value === 'top') {
+      const pillW = 79;
+      const r = [
+        (W / 2 - pillW / 2 - 20) * k,
+        0,
+        (pillW + 40) * k,
+        (10 + WAKE_BAND + 15) * k,
+      ];
+      invoke('set_hot', { rects: [r], expanded: false }).catch(() => {});
+    } else {
+      const pillH = 79;
+      const r = [
+        (W - 10 - WAKE_BAND) * k,
+        (H / 2 - pillH / 2 - 20) * k,
+        (10 + WAKE_BAND + 15) * k,
+        (pillH + 40) * k,
+      ];
+      invoke('set_hot', { rects: [r], expanded: false }).catch(() => {});
+    }
     return;
   }
 
   const rects: number[][] = [];
   if (notchPillRef.value) {
     const pr = notchPillRef.value.getBoundingClientRect();
-    // Notch pill plus fillets and handles buffer
-    rects.push([
-      (pr.left - 10) * k,
-      (pr.top - 50) * k,
-      (pr.width + 20) * k,
-      (pr.height + 100) * k,
-    ]);
+    if (notchEdge.value === 'top') {
+      // Notch pill plus fillets and handles buffer for top edge
+      rects.push([
+        (pr.left - 50) * k,
+        0,
+        (pr.width + 100) * k,
+        (pr.height + 25) * k,
+      ]);
+    } else {
+      // Notch pill plus fillets and handles buffer for right edge
+      rects.push([
+        (pr.left - 10) * k,
+        (pr.top - 50) * k,
+        (pr.width + 20) * k,
+        (pr.height + 100) * k,
+      ]);
+    }
   }
 
   if (activeHoverId.value && cardRef.value) {
     const cr = cardRef.value.getBoundingClientRect();
-    rects.push([
-      (cr.left - 10) * k,
-      (cr.top - 10) * k,
-      (cr.width + 50) * k, // bridge gap between card and pill
-      (cr.height + 20) * k,
-    ]);
+    if (notchEdge.value === 'top') {
+      rects.push([
+        (cr.left - 10) * k,
+        (cr.top - 40) * k, // bridge gap between card and top pill
+        (cr.width + 20) * k,
+        (cr.height + 50) * k,
+      ]);
+    } else {
+      rects.push([
+        (cr.left - 10) * k,
+        (cr.top - 10) * k,
+        (cr.width + 50) * k, // bridge gap between card and right pill
+        (cr.height + 20) * k,
+      ]);
+    }
   }
 
   invoke('set_hot', { rects, expanded: true }).catch(() => {});
@@ -253,26 +291,42 @@ function scheduleFold() {
   }, FOLD_GRACE);
 }
 
-// Position card vertically centered on ring, with curved tail pointing directly at ring center
+// Position card centered on hovered ring, with curved tail pointing directly at ring center
 function placeCard(targetEl: HTMLElement) {
-  // Find the exact circular ring gauge element for vertical center
   const ring = (targetEl.querySelector('.ringwrap') as HTMLElement) || targetEl;
   const rr = ring.getBoundingClientRect();
-  const ringCenterY = rr.top + rr.height / 2;
+  const W = window.innerWidth;
   const H = window.innerHeight;
+  const cw = cardRef.value?.offsetWidth || 290;
   const ch = cardRef.value?.offsetHeight || 260;
 
-  // Center card vertically on ring, clamped so it never overflows top or bottom of window
-  let top = Math.round(ringCenterY - ch / 2);
-  top = Math.max(16, Math.min(top, H - ch - 16));
-  cardTop.value = top;
+  if (notchEdge.value === 'top') {
+    const ringCenterX = rr.left + rr.width / 2;
+    // Center card horizontally under ring, clamped within window bounds
+    let left = Math.round(ringCenterX - cw / 2);
+    left = Math.max(16, Math.min(left, W - cw - 16));
+    cardLeft.value = left;
+    cardTop.value = 98; // Positioned under the 70px pill
 
-  // Tail height is 36px; tip is at Y = 18px (middle of tail)
-  // Clamp tail so it doesn't detach from the card rounded corners
-  const minTailY = top + 18;
-  const maxTailY = top + ch - 18;
-  const clampedTipY = Math.max(minTailY, Math.min(maxTailY, ringCenterY));
-  tailTop.value = Math.round(clampedTipY - 18);
+    // Tail width is 36px; tip is at X = 18px (middle of tail)
+    const minTailX = left + 18;
+    const maxTailX = left + cw - 18;
+    const clampedTipX = Math.max(minTailX, Math.min(maxTailX, ringCenterX));
+    tailLeft.value = Math.round(clampedTipX - 18);
+    tailTop.value = 69;
+  } else {
+    const ringCenterY = rr.top + rr.height / 2;
+    // Center card vertically on ring, clamped within window bounds
+    let top = Math.round(ringCenterY - ch / 2);
+    top = Math.max(16, Math.min(top, H - ch - 16));
+    cardTop.value = top;
+
+    // Tail height is 36px; tip is at Y = 18px (middle of tail)
+    const minTailY = top + 18;
+    const maxTailY = top + ch - 18;
+    const clampedTipY = Math.max(minTailY, Math.min(maxTailY, ringCenterY));
+    tailTop.value = Math.round(clampedTipY - 18);
+  }
   reportHot();
 }
 
@@ -310,10 +364,18 @@ function handlePointerAt(clientX: number, clientY: number) {
   if (isFolded.value) {
     const W = window.innerWidth;
     const H = window.innerHeight;
-    const cy = H / 2;
-    // Wake up if cursor is near right screen edge around the rest pill
-    if (clientX >= W - 10 - WAKE_BAND && Math.abs(clientY - cy) <= 55) {
-      unfold();
+    if (notchEdge.value === 'top') {
+      const cx = W / 2;
+      // Wake up if cursor is near top screen center around the rest pill
+      if (clientY <= 10 + WAKE_BAND && Math.abs(clientX - cx) <= 55) {
+        unfold();
+      }
+    } else {
+      const cy = H / 2;
+      // Wake up if cursor is near right screen edge around the rest pill
+      if (clientX >= W - 10 - WAKE_BAND && Math.abs(clientY - cy) <= 55) {
+        unfold();
+      }
     }
     return;
   }
@@ -322,17 +384,27 @@ function handlePointerAt(clientX: number, clientY: number) {
   if (notchPillRef.value) {
     const pr = notchPillRef.value.getBoundingClientRect();
     const R = 38.7;
-    // Top handle center: [pr.right - R, pr.top - R]
-    const topHx = pr.right - R;
-    const topHy = pr.top - R;
-    const distTop = Math.hypot(clientX - topHx, clientY - topHy);
-    isHoveringMove.value = distTop <= 32;
+    if (notchEdge.value === 'top') {
+      // Left handle (#move): pocket to the left of pill
+      const moveHx = pr.left - R;
+      const moveHy = pr.top + 35;
+      isHoveringMove.value = Math.hypot(clientX - moveHx, clientY - moveHy) <= 32;
 
-    // Bottom handle center: [pr.right - R, pr.bottom + R]
-    const botHx = pr.right - R;
-    const botHy = pr.bottom + R;
-    const distBot = Math.hypot(clientX - botHx, clientY - botHy);
-    isHoveringOrb.value = distBot <= 32;
+      // Right handle (#orb): pocket to the right of pill
+      const orbHx = pr.right + R;
+      const orbHy = pr.top + 35;
+      isHoveringOrb.value = Math.hypot(clientX - orbHx, clientY - orbHy) <= 32;
+    } else {
+      // Top handle center: [pr.right - R, pr.top - R]
+      const topHx = pr.right - R;
+      const topHy = pr.top - R;
+      isHoveringMove.value = Math.hypot(clientX - topHx, clientY - topHy) <= 32;
+
+      // Bottom handle center: [pr.right - R, pr.bottom + R]
+      const botHx = pr.right - R;
+      const botHy = pr.bottom + R;
+      isHoveringOrb.value = Math.hypot(clientX - botHx, clientY - botHy) <= 32;
+    }
 
     if (isHoveringMove.value || isHoveringOrb.value) {
       if (activeHoverId.value) scheduleHideCard();
@@ -363,7 +435,9 @@ function handlePointerAt(clientX: number, clientY: number) {
   // Check if pointer is inside card or bridge to pill
   if (activeHoverId.value && cardRef.value) {
     const cr = cardRef.value.getBoundingClientRect();
-    const bridgeRect = new DOMRect(cr.left, cr.top, cr.width + 36, cr.height);
+    const bridgeRect = notchEdge.value === 'top'
+      ? new DOMRect(cr.left, cr.top - 36, cr.width, cr.height + 36)
+      : new DOMRect(cr.left, cr.top, cr.width + 36, cr.height);
     if (inRect(clientX, clientY, bridgeRect, 8)) {
       if (hideTimer) {
         clearTimeout(hideTimer);
@@ -571,6 +645,7 @@ let unlistenUsage: (() => void) | null = null;
 let unlistenPointer: (() => void) | null = null;
 let unlistenCursor: (() => void) | null = null;
 let unlistenTabs: (() => void) | null = null;
+let unlistenEdge: (() => void) | null = null;
 
 watch(activeHoverId, (newId) => {
   if (newId && notchPillRef.value) {
@@ -586,6 +661,9 @@ watch(activeHoverId, (newId) => {
 
 onMounted(async () => {
   window.addEventListener('mousemove', handleDomMouseMove);
+
+  // Sync initial edge position to Rust backend
+  invoke('set_notch_edge', { edge: notchEdge.value }).catch(() => {});
 
   // 1. Listen to native watchdog pointer in/out events
   unlistenPointer = await listen<boolean>('notch_pointer', (event) => {
@@ -638,6 +716,14 @@ onMounted(async () => {
     }
   });
 
+  unlistenEdge = await listen<string>('notch_edge_changed', (event) => {
+    if (event.payload === 'top' || event.payload === 'right') {
+      notchEdge.value = event.payload;
+      activeHoverId.value = null;
+      nextTick(() => reportHot());
+    }
+  });
+
   window.addEventListener('storage', (e) => {
     if (e.key === 'arkbar_provider_tabs') {
       providerTabs.value = loadProviderTabs();
@@ -652,6 +738,10 @@ onMounted(async () => {
       } else if (mode === 'hover') {
         isFolded.value = true;
       }
+      nextTick(() => reportHot());
+    } else if (e.key === 'arkbar_notch_edge') {
+      notchEdge.value = (localStorage.getItem('arkbar_notch_edge') as NotchEdge) || 'right';
+      activeHoverId.value = null;
       nextTick(() => reportHot());
     }
   });
@@ -668,6 +758,7 @@ onUnmounted(() => {
   if (unlistenPointer) unlistenPointer();
   if (unlistenCursor) unlistenCursor();
   if (unlistenTabs) unlistenTabs();
+  if (unlistenEdge) unlistenEdge();
   if (foldTimer) clearTimeout(foldTimer);
   if (hideTimer) clearTimeout(hideTimer);
 });
@@ -676,19 +767,19 @@ onUnmounted(() => {
 <template>
   <div
     v-if="notchMode !== 'hidden'"
-    class="fixed inset-0 pointer-events-none select-none flex items-center justify-end overflow-visible font-sans"
+    class="fixed inset-0 pointer-events-none select-none flex overflow-visible font-sans"
+    :class="notchEdge === 'top' ? 'items-start justify-center pt-0' : 'items-center justify-end pr-0'"
   >
     <!-- ============================================================ -->
     <!-- 1. SPEECH BUBBLE POPOVER CARD & ORGANIC TAIL (Anchored to Window) -->
     <!-- ============================================================ -->
-    <Transition name="codenotch-pop">
+    <Transition :name="notchEdge === 'top' ? 'codenotch-pop-top' : 'codenotch-pop'">
       <div v-if="!isFolded && activeHoverId" class="contents">
         <!-- Organic Curved Wedge Tail (clip-path from Codenotch spec) -->
         <div
           id="tail"
-          :style="{
-            top: `${tailTop}px`,
-          }"
+          :class="{ 'is-edge-top': notchEdge === 'top' }"
+          :style="notchEdge === 'top' ? { top: `${tailTop}px`, left: `${tailLeft}px` } : { top: `${tailTop}px` }"
         />
 
         <!-- Speech Bubble Card Container -->
@@ -696,9 +787,8 @@ onUnmounted(() => {
           ref="cardRef"
           id="card"
           class="pointer-events-auto"
-          :style="{
-            top: `${cardTop}px`,
-          }"
+          :class="{ 'is-edge-top': notchEdge === 'top' }"
+          :style="notchEdge === 'top' ? { top: `${cardTop}px`, left: `${cardLeft}px` } : { top: `${cardTop}px` }"
         >
           <!-- Card Header: Logo + Title + Status -->
           <div class="flex items-center justify-between pb-2.5 mb-2.5 border-b border-white/[0.08]">
@@ -843,26 +933,37 @@ onUnmounted(() => {
     </Transition>
 
     <!-- ============================================================ -->
-    <!-- 2. UNIFIED INTERACTIVE ZONE (Right Screen Edge)              -->
+    <!-- 2. UNIFIED INTERACTIVE ZONE                                  -->
     <!-- ============================================================ -->
     <div
-      class="relative pointer-events-auto flex items-center pr-0"
-      :class="{ 'is-folded-body': isFolded }"
+      class="relative pointer-events-auto flex items-center"
+      :class="[
+        notchEdge === 'top' ? 'flex-col pt-0 is-edge-top' : 'flex-row pr-0 is-edge-right',
+        { 'is-folded-body': isFolded }
+      ]"
     >
-      <!-- 1. REST PILL (Codenotch #rest: Sleek 10px x 79px capsule hugging edge when folded) -->
+      <!-- 1. REST PILL (Codenotch #rest: Sleek capsule hugging edge when folded) -->
       <div
         id="rest"
-        :class="{ 'is-active': isFolded }"
+        :class="[
+          { 'is-active': isFolded },
+          notchEdge === 'top' ? 'is-edge-top' : 'is-edge-right'
+        ]"
         @mouseenter="unfold"
       />
 
-      <!-- 2. TOP MOVE HANDLE (Codenotch #move handle: hand icon for carrying/dragging) -->
+      <!-- 2. TOP/LEFT MOVE HANDLE (Codenotch #move handle: hand icon for carrying/dragging) -->
       <div
         id="move"
         class="handle"
-        :class="{ 'hover': isHoveringMove, 'is-folded-handle': isFolded }"
+        :class="[
+          { 'hover': isHoveringMove, 'is-folded-handle': isFolded },
+          notchEdge === 'top' ? 'is-edge-top' : 'is-edge-right'
+        ]"
         title="按住拖动调整刘海位置"
         @mousedown="handleDragMouseDown"
+        @mouseenter="isHoveringMove = true"
+        @mouseleave="isHoveringMove = false"
       >
         <svg class="h-rest" viewBox="-36 -36 72 72" aria-hidden="true">
           <circle class="h-ring" r="28.5" fill="none" stroke-width="8.8" stroke-linecap="round" stroke-dasharray="44.77 179.07" />
@@ -874,13 +975,18 @@ onUnmounted(() => {
         </svg>
       </div>
 
-      <!-- 4. BOTTOM SETTINGS ORB (Codenotch #orb handle: gear icon for preferences) -->
+      <!-- 4. BOTTOM/RIGHT SETTINGS ORB (Codenotch #orb handle: gear icon for preferences) -->
       <div
         id="orb"
         class="handle"
-        :class="{ 'hover': isHoveringOrb, 'is-folded-handle': isFolded }"
+        :class="[
+          { 'hover': isHoveringOrb, 'is-folded-handle': isFolded },
+          notchEdge === 'top' ? 'is-edge-top' : 'is-edge-right'
+        ]"
         title="偏好设置"
         @click="openSettings"
+        @mouseenter="isHoveringOrb = true"
+        @mouseleave="isHoveringOrb = false"
       >
         <svg class="h-rest" viewBox="-36 -36 72 72" aria-hidden="true">
           <circle class="h-ring" r="28.5" fill="none" stroke-width="8.8" stroke-linecap="round" stroke-dasharray="44.77 179.07" />
@@ -896,7 +1002,10 @@ onUnmounted(() => {
       <div
         ref="notchPillRef"
         id="pill"
-        :class="{ 'is-folded': isFolded }"
+        :class="[
+          { 'is-folded': isFolded },
+          notchEdge === 'top' ? 'is-edge-top' : 'is-edge-right'
+        ]"
       >
         <!-- Provider Circular Rings Stack -->
         <div
@@ -964,7 +1073,7 @@ onUnmounted(() => {
 }
 
 /* ===================================================================== */
-/* 1. REST PILL (Codenotch #rest: 10px x 79px capsule hugging edge)       */
+/* 1. REST PILL (Codenotch #rest: Sleek capsule hugging edge)            */
 /* ===================================================================== */
 #rest {
   position: absolute;
@@ -983,6 +1092,18 @@ onUnmounted(() => {
   opacity: 0;
   transition: opacity 0.16s ease;
   z-index: 45;
+}
+
+#rest.is-edge-top {
+  right: auto;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 79px;
+  height: 10px;
+  border-radius: 0 0 6px 6px;
+  border: 1px solid #2e2e2e;
+  border-top: none;
 }
 
 #rest.is-active {
@@ -1015,14 +1136,32 @@ onUnmounted(() => {
   transition: clip-path 0.36s cubic-bezier(0.32, 0.72, 0.24, 1);
 }
 
+#pill.is-edge-top {
+  top: 0;
+  right: auto;
+  width: auto;
+  min-width: 120px;
+  height: 70px;
+  padding: 0 20px;
+  border-radius: 0 0 20px 20px;
+  border: 1px solid #2e2e2e;
+  border-top: none;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  --clip-open: inset(-1px -40px -40px -40px round 0);
+  --clip-rest: inset(0 calc(50% - 39.5px) calc(100% - 10px) calc(50% - 39.5px) round 0 0 6px 6px);
+}
+
 #pill.is-folded {
   clip-path: var(--clip-rest);
   pointer-events: none;
 }
 
-/* Fillets: Concave arcs between the pill's top/bottom and screen edge */
-#pill::before,
-#pill::after {
+/* Fillets: Concave arcs between pill and screen edge for Right Placement */
+#pill:not(.is-edge-top)::before,
+#pill:not(.is-edge-top)::after {
   content: "";
   position: absolute;
   right: 0;
@@ -1031,14 +1170,39 @@ onUnmounted(() => {
   pointer-events: none;
 }
 
-#pill::before {
+#pill:not(.is-edge-top)::before {
   top: calc(-1 * var(--fillet));
   background: radial-gradient(circle at 0 0, transparent calc(var(--fillet) - 1.5px), #2e2e2e calc(var(--fillet) - 0.5px), #000000 calc(var(--fillet) + 0.5px));
 }
 
-#pill::after {
+#pill:not(.is-edge-top)::after {
   bottom: calc(-1 * var(--fillet));
   background: radial-gradient(circle at 0 100%, transparent calc(var(--fillet) - 1.5px), #2e2e2e calc(var(--fillet) - 0.5px), #000000 calc(var(--fillet) + 0.5px));
+}
+
+/* Fillets: Concave arcs between pill and screen edge for Top Placement */
+#pill.is-edge-top::before,
+#pill.is-edge-top::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  width: var(--fillet);
+  height: var(--fillet);
+  pointer-events: none;
+}
+
+#pill.is-edge-top::before {
+  left: calc(-1 * var(--fillet));
+  right: auto;
+  bottom: auto;
+  background: radial-gradient(circle at 0 100%, transparent calc(var(--fillet) - 1.5px), #2e2e2e calc(var(--fillet) - 0.5px), #000000 calc(var(--fillet) + 0.5px));
+}
+
+#pill.is-edge-top::after {
+  right: calc(-1 * var(--fillet));
+  left: auto;
+  bottom: auto;
+  background: radial-gradient(circle at 100% 100%, transparent calc(var(--fillet) - 1.5px), #2e2e2e calc(var(--fillet) - 0.5px), #000000 calc(var(--fillet) + 0.5px));
 }
 
 /* ===================================================================== */
@@ -1055,6 +1219,12 @@ onUnmounted(() => {
 .is-folded .cell {
   opacity: 0;
   transform: translateX(10px);
+  pointer-events: none;
+}
+
+.is-edge-top.is-folded .cell {
+  opacity: 0;
+  transform: translateY(-10px);
   pointer-events: none;
 }
 
@@ -1104,17 +1274,35 @@ onUnmounted(() => {
   transition: opacity 0.2s ease;
 }
 
-#move {
+#move:not(.is-edge-top) {
   --arc: 0deg;
   right: 10.2px;
   top: -67.2px; /* Positioned directly over the top fillet pocket */
   transform: none;
 }
 
-#orb {
+#orb:not(.is-edge-top) {
   --arc: 270deg;
   right: 10.2px;
   bottom: -67.2px; /* Positioned directly over the bottom fillet pocket */
+  transform: none;
+}
+
+#move.is-edge-top {
+  --arc: 270deg;
+  left: -67.2px; /* Left fillet pocket */
+  right: auto;
+  top: 10.2px;
+  bottom: auto;
+  transform: none;
+}
+
+#orb.is-edge-top {
+  --arc: 180deg;
+  right: -67.2px; /* Right fillet pocket */
+  left: auto;
+  top: 10.2px;
+  bottom: auto;
   transform: none;
 }
 
@@ -1209,6 +1397,12 @@ onUnmounted(() => {
   scrollbar-color: transparent transparent;
 }
 
+#card.is-edge-top {
+  right: auto;
+  max-height: calc(100% - 110px);
+  transition: left 0.16s cubic-bezier(0.32, 0.72, 0.24, 1);
+}
+
 #card:hover {
   scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
 }
@@ -1248,7 +1442,15 @@ onUnmounted(() => {
   transition: top 0.16s cubic-bezier(0.32, 0.72, 0.24, 1);
 }
 
-/* Popover Speech-Bubble Spring Animation */
+#tail.is-edge-top {
+  right: auto;
+  width: 36px;
+  height: 32px;
+  clip-path: path('M0 32C9 32 13.68 13.44 18 0C22.32 13.44 27 32 36 32Z');
+  transition: left 0.16s cubic-bezier(0.32, 0.72, 0.24, 1);
+}
+
+/* Popover Speech-Bubble Spring Animation (Right Edge) */
 .codenotch-pop-enter-active {
   transition: opacity 0.18s ease-out, transform 0.22s cubic-bezier(0.34, 1.4, 0.64, 1);
 }
@@ -1262,5 +1464,21 @@ onUnmounted(() => {
 .codenotch-pop-leave-to {
   opacity: 0;
   transform: translateX(8px) scale(0.97);
+}
+
+/* Popover Speech-Bubble Spring Animation (Top Edge) */
+.codenotch-pop-top-enter-active {
+  transition: opacity 0.18s ease-out, transform 0.22s cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+.codenotch-pop-top-leave-active {
+  transition: opacity 0.12s ease-in, transform 0.12s ease-in;
+}
+.codenotch-pop-top-enter-from {
+  opacity: 0;
+  transform: translateY(-10px) scale(0.96);
+}
+.codenotch-pop-top-leave-to {
+  opacity: 0;
+  transform: translateY(-8px) scale(0.97);
 }
 </style>

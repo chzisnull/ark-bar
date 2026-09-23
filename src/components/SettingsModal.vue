@@ -20,6 +20,7 @@ import {
   Sliders,
   Power,
   RefreshCw,
+  RotateCcw,
 } from 'lucide-vue-next';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart';
@@ -110,6 +111,32 @@ function setNotchMode(mode: 'hover' | 'always' | 'hidden') {
   notchMode.value = mode;
   localStorage.setItem('arkbar_notch_mode', mode);
   window.dispatchEvent(new Event('storage'));
+}
+
+// Notch edge placement: 'right' (default) | 'top'
+export type NotchEdge = 'right' | 'top';
+
+const notchEdge = ref<NotchEdge>(
+  (localStorage.getItem('arkbar_notch_edge') as NotchEdge) || 'right'
+);
+
+async function setNotchEdge(edge: NotchEdge) {
+  notchEdge.value = edge;
+  localStorage.setItem('arkbar_notch_edge', edge);
+  window.dispatchEvent(new Event('storage'));
+  try {
+    await invoke('set_notch_edge', { edge });
+  } catch (e) {
+    console.error('Failed to set notch edge:', e);
+  }
+}
+
+async function recentreNotch() {
+  try {
+    await invoke('recentre_notch', { edge: notchEdge.value });
+  } catch (e) {
+    console.error('Failed to recentre notch:', e);
+  }
 }
 
 const showTrayIcon = ref<boolean>(localStorage.getItem('arkbar_show_tray') === 'true');
@@ -651,7 +678,60 @@ async function toggleNotchWindow() {
               </button>
             </div>
             <p class="text-[11px] text-neutral-500 leading-relaxed">
-              悬停时展开模式下：鼠标未移入时，刘海收拢为屏幕右侧极简黑胶囊；鼠标放上去时即刻向外展开完整环形指标与气泡卡片。
+              悬停时展开模式下：鼠标未移入时，刘海收拢为屏幕边缘极简黑胶囊；鼠标放上去时即刻向外展开完整环形指标与气泡卡片。
+            </p>
+          </div>
+
+          <!-- 屏幕停留位置 (Screen Edge Placement - Codenotch Style) -->
+          <div class="bg-[#202126] border border-white/5 rounded-xl p-4 space-y-3">
+            <div class="flex items-center justify-between">
+              <div>
+                <h3 class="text-sm font-semibold text-white">屏幕停留位置</h3>
+                <p class="text-xs text-neutral-400 mt-0.5">设置屏幕刘海停靠边缘（支持右侧或顶部贴边）</p>
+              </div>
+              <button
+                @click="recentreNotch"
+                class="px-2.5 py-1 text-xs font-medium rounded-lg bg-white/10 hover:bg-white/15 text-neutral-200 hover:text-white transition-colors flex items-center gap-1.5 cursor-pointer"
+                title="复位贴边到当前屏幕居中位置"
+              >
+                <RotateCcw class="w-3.5 h-3.5" />
+                <span>复位居中</span>
+              </button>
+            </div>
+
+            <div class="grid grid-cols-2 gap-3">
+              <button
+                @click="setNotchEdge('right')"
+                class="p-3 rounded-lg border text-left transition-all cursor-pointer flex items-center gap-3"
+                :class="notchEdge === 'right' ? 'border-[#0a84ff] bg-[#0a84ff]/10 text-white' : 'border-white/5 bg-white/5 text-neutral-400 hover:text-white'"
+              >
+                <!-- Right Edge mini preview -->
+                <div class="w-9 h-7 rounded border border-white/20 bg-black/40 flex items-center justify-end pr-0.5 shrink-0">
+                  <div class="w-1.5 h-4 bg-[#0a84ff] rounded-l-sm" />
+                </div>
+                <div>
+                  <div class="text-sm font-bold">右侧屏幕边缘</div>
+                  <div class="text-[11px] text-neutral-400 mt-0.5">垂直贴边 · 气泡向左展开</div>
+                </div>
+              </button>
+
+              <button
+                @click="setNotchEdge('top')"
+                class="p-3 rounded-lg border text-left transition-all cursor-pointer flex items-center gap-3"
+                :class="notchEdge === 'top' ? 'border-[#0a84ff] bg-[#0a84ff]/10 text-white' : 'border-white/5 bg-white/5 text-neutral-400 hover:text-white'"
+              >
+                <!-- Top Edge mini preview -->
+                <div class="w-9 h-7 rounded border border-white/20 bg-black/40 flex flex-col items-center pt-0.5 shrink-0">
+                  <div class="w-4 h-1.5 bg-[#0a84ff] rounded-b-sm" />
+                </div>
+                <div>
+                  <div class="text-sm font-bold">顶部屏幕边缘</div>
+                  <div class="text-[11px] text-neutral-400 mt-0.5">水平居中 · 气泡向下展开</div>
+                </div>
+              </button>
+            </div>
+            <p class="text-[11px] text-neutral-500 leading-relaxed">
+              顶部边缘贴合 MacBook 刘海或菜单栏中央；拖动手柄可自由沿边缘微调，点击“复位居中”可瞬间重置至正中。
             </p>
           </div>
 

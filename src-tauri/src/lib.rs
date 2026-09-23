@@ -128,6 +128,8 @@ pub fn run() {
             tray::exit_app,
             tray::set_float_window_size,
             tray::set_main_window_size,
+            tray::set_notch_edge,
+            tray::recentre_notch,
             notch_monitor::set_hot,
         ])
         .run(tauri::generate_context!())
