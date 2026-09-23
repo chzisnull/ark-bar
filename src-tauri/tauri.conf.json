@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "ArkBar",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "identifier": "com.chzisnull.arkbar",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -14,24 +14,25 @@
     "windows": [
       {
         "label": "main",
-        "title": "ArkBar",
-        "width": 380,
-        "height": 550,
+        "title": "ArkBar 设置",
+        "width": 720,
+        "height": 530,
         "resizable": false,
         "fullscreen": false,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": false,
         "visible": false,
-        "skipTaskbar": true,
+        "skipTaskbar": false,
+        "center": true,
         "shadow": true
       },
       {
         "label": "float",
         "title": "ArkBar Notch",
         "url": "index.html#float",
-        "width": 400,
-        "height": 560,
+        "width": 440,
+        "height": 580,
         "resizable": false,
         "fullscreen": false,
         "decorations": false,

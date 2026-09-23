@@ -3,7 +3,6 @@ import { ref, onMounted, onUnmounted, watch, defineAsyncComponent } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { EnvironmentStatus, UpdateInfo, ProviderType, ProviderUsageData, TrayPercentMode, ProviderTabConfig } from './types';
-import UsagePanel from './components/UsagePanel.vue';
 
 // Lazy load non-critical components to minimize initial bundle parsing
 const OnboardingWizard = defineAsyncComponent(() => import('./components/OnboardingWizard.vue'));
@@ -11,7 +10,7 @@ const SettingsModal = defineAsyncComponent(() => import('./components/SettingsMo
 const FloatingWidget = defineAsyncComponent(() => import('./components/FloatingWidget.vue'));
 
 const isFloatWindow = ref(window.location.hash === '#float');
-const currentView = ref<'onboarding' | 'panel' | 'settings'>('panel');
+const currentView = ref<'onboarding' | 'settings'>('settings');
 const envStatus = ref<EnvironmentStatus | null>(null);
 const updateInfo = ref<UpdateInfo | null>(null);
 const isRefreshing = ref(false);
@@ -30,15 +29,6 @@ const DEFAULT_PROVIDER_TABS: ProviderTabConfig[] = [
   { id: 'codex', name: 'Codex', visible: true, notch_metric: 'session' },
   { id: 'teamo', name: 'Teamo', visible: true, notch_metric: 'balance' },
 ];
-
-watch(currentView, (newView) => {
-  if (isFloatWindow.value) return;
-  if (newView === 'settings') {
-    invoke('set_main_window_size', { width: 680, height: 530 }).catch(() => {});
-  } else {
-    invoke('set_main_window_size', { width: 380, height: 550 }).catch(() => {});
-  }
-});
 
 function loadProviderTabsConfig(): ProviderTabConfig[] {
   try {
@@ -216,15 +206,6 @@ function prefetchOtherProviders() {
   );
 }
 
-function handleGoAuth(provider: ProviderType) {
-  if (provider === 'volcengine') {
-    checkEnv();
-    currentView.value = 'onboarding';
-  } else {
-    currentView.value = 'settings';
-  }
-}
-
 async function handleRefreshCurrent() {
   await fetchProviderUsage(activeProvider.value, false, true);
 }
@@ -304,7 +285,7 @@ async function checkAutoUpdate() {
 }
 
 async function handleOnboardingComplete() {
-  currentView.value = 'panel';
+  currentView.value = 'settings';
   await fetchProviderUsage('volcengine');
 }
 
@@ -371,43 +352,30 @@ onUnmounted(() => {
   window.removeEventListener('focus', onPanelBecomeVisible);
   if (unlistenUsage) unlistenUsage();
 });
+function handleCloseSettings() {
+  invoke('hide_window').catch(() => {});
+}
 </script>
 
 <template>
-  <!-- 1. Floating Desktop Widget Mode -->
+  <!-- 1. Floating Desktop Widget Mode (Screen Edge Notch) -->
   <FloatingWidget v-if="isFloatWindow" />
 
-  <!-- 2. Main Menu Bar Popover Mode -->
-  <main v-else class="w-full h-full rounded-2xl bg-[#0e131f] border border-slate-700/60 shadow-2xl overflow-hidden flex flex-col font-sans">
-    <!-- 1. Onboarding Wizard -->
+  <!-- 2. Settings Window Mode (Codenotch 2-Column Settings) -->
+  <main v-else class="w-full h-full rounded-2xl bg-[#18191c] shadow-2xl overflow-hidden flex flex-col font-sans">
+    <!-- Onboarding Wizard -->
     <OnboardingWizard
       v-if="currentView === 'onboarding'"
       :status="envStatus || { has_node: false, node_version: null, has_npm: false, npm_version: null, has_arkcli: false, arkcli_version: null, logged_in: false, user_name: null, account_id: null, active_profile: null, error_message: null }"
       @env-updated="envStatus = $event"
       @refresh="checkEnv"
       @complete="handleOnboardingComplete"
-      @back="currentView = 'panel'"
+      @back="currentView = 'settings'"
     />
 
-    <!-- 2. Quota Usage Panel -->
-    <UsagePanel
-      v-else-if="currentView === 'panel'"
-      :providers-data="providersData"
-      :active-provider="activeProvider"
-      :provider-tabs="providerTabs"
-      :is-refreshing="isRefreshing"
-      :loading-map="loadingMap"
-      :update-info="updateInfo"
-      @switch-provider="handleSwitchProvider"
-      @update-provider-tabs="saveProviderTabs"
-      @refresh="handleRefreshCurrent"
-      @go-auth="handleGoAuth"
-      @open-settings="currentView = 'settings'"
-    />
-
-    <!-- 3. Settings View -->
+    <!-- Settings Window (Codenotch Style) -->
     <SettingsModal
-      v-else-if="currentView === 'settings'"
+      v-else
       :env-status="envStatus"
       :refresh-interval="refreshInterval"
       :tray-percent-mode="trayPercentMode"
@@ -421,7 +389,7 @@ onUnmounted(() => {
       @re-login="currentView = 'onboarding'"
       @provider-token-updated="handleRefreshCurrent"
       @update-checked="updateInfo = $event"
-      @close="currentView = 'panel'"
+      @close="handleCloseSettings"
     />
   </main>
 </template>

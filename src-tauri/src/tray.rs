@@ -1,6 +1,5 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use std::time::Duration;
 use tauri::{
     image::Image,
     menu::{ContextMenu, Menu, MenuItem},
@@ -10,32 +9,17 @@ use tauri::{
 use tauri_plugin_positioner::{Position, WindowExt};
 
 static FLOAT_PLACED: AtomicBool = AtomicBool::new(false);
-pub static IGNORE_UNFOCUS_HIDE: AtomicBool = AtomicBool::new(false);
 static LAST_TRAY_TITLE: Mutex<String> = Mutex::new(String::new());
 
-fn arm_ignore_unfocus_hide() {
-    IGNORE_UNFOCUS_HIDE.store(true, Ordering::SeqCst);
-    std::thread::spawn(|| {
-        std::thread::sleep(Duration::from_millis(450));
-        IGNORE_UNFOCUS_HIDE.store(false, Ordering::SeqCst);
-    });
-}
-
-fn show_main_popover(window: &WebviewWindow) {
-    arm_ignore_unfocus_hide();
-    // 托盘从未被点击（如图标被隐藏后直接用快捷键呼出）时 positioner
-    // 没有 TrayCenter 数据，降级到屏幕角落
-    if window.move_window_constrained(Position::TrayCenter).is_err() {
-        #[cfg(target_os = "macos")]
-        let _ = window.move_window(Position::TopRight);
-        #[cfg(not(target_os = "macos"))]
-        let _ = window.move_window(Position::BottomRight);
+pub fn show_settings_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.center();
+        let _ = window.show();
+        let _ = window.set_focus();
     }
-    let _ = window.show();
-    let _ = window.set_focus();
 }
 
-fn reveal_float_window(window: &WebviewWindow) {
+pub fn reveal_float_window(window: &WebviewWindow) {
     // Only snap to the default corner the first time. After the user drags
     // the widget, keep that position across hide/show and size changes.
     if !FLOAT_PLACED.swap(true, Ordering::SeqCst) {
@@ -54,7 +38,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 
     let tray_image = Image::from_bytes(icon_bytes)?;
 
-    let show_i = MenuItem::with_id(app, "show", "打开 ArkBar", true, None::<&str>)?;
+    let show_i = MenuItem::with_id(app, "show", "偏好设置...", true, None::<&str>)?;
     let float_i = MenuItem::with_id(app, "toggle_float", "切换屏幕刘海 (Notch)", true, None::<&str>)?;
     let quit_i = MenuItem::with_id(app, "quit", "退出 ArkBar", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show_i, &float_i, &quit_i])?;
@@ -62,12 +46,8 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let popup_menu = menu.clone();
 
     let mut builder = TrayIconBuilder::with_id("ark-bar-tray")
-        .tooltip("ArkBar - 多模型配额监控")
+        .tooltip("ArkBar - 屏幕刘海配额监控")
         .icon(tray_image)
-        // macOS 27 起，系统会接管挂载了菜单的状态栏项的左键（直接弹菜单，
-        // 自定义点击处理收不到事件）。与上游 tray-icon 0.25.1 (#365) 的修复
-        // 思路一致：菜单不常驻挂载，右键时经 popup_at 在光标处手动弹出。
-        // 待 tauri 升级到含 tray-icon >= 0.25.1 的版本后可移除本变通。
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| {
             match event.id.as_ref() {
@@ -75,9 +55,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     app.exit(0);
                 }
                 "show" => {
-                    if let Some(window) = app.get_webview_window("main") {
-                        show_main_popover(&window);
-                    }
+                    show_settings_window(app);
                 }
                 "toggle_float" => {
                     if let Some(window) = app.get_webview_window("float") {
@@ -105,14 +83,14 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             } = &event
             {
                 match (button, button_state) {
-                    // 左键：显隐切换主面板（与历史行为一致）
+                    // 左键：显隐切换右侧屏幕刘海
                     (MouseButton::Left, MouseButtonState::Up) => {
                         let app = tray.app_handle();
-                        if let Some(window) = app.get_webview_window("main") {
+                        if let Some(window) = app.get_webview_window("float") {
                             if window.is_visible().unwrap_or(false) {
                                 let _ = window.hide();
                             } else {
-                                show_main_popover(&window);
+                                reveal_float_window(&window);
                             }
                         }
                     }
@@ -194,9 +172,7 @@ pub fn set_tray_icon_visible(app: AppHandle, visible: bool) -> Result<(), String
 
 #[tauri::command]
 pub fn show_main_window(app: AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("main") {
-        show_main_popover(&window);
-    }
+    show_settings_window(&app);
     Ok(())
 }
 

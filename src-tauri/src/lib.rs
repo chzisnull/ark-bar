@@ -14,7 +14,6 @@ mod usage_cache;
 pub mod token_stats;
 
 use tauri::Manager;
-use tauri_plugin_positioner::{Position, WindowExt};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -31,11 +30,11 @@ pub fn run() {
                     // 菜单栏图标被系统挤掉或被用户隐藏时，快捷键是常驻入口；
                     // 行为与托盘左键一致：显则隐、隐则显
                     if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                        if let Some(window) = app.get_webview_window("main") {
+                        if let Some(window) = app.get_webview_window("float") {
                             if window.is_visible().unwrap_or(false) {
                                 let _ = window.hide();
                             } else {
-                                let _ = tray::show_main_window(app.clone());
+                                tray::reveal_float_window(&window);
                             }
                         }
                     }
@@ -84,39 +83,14 @@ pub fn run() {
             // Hide window when clicking outside (loss of focus).
             // Ignore blur for a short window after tray-clicks so the popover
             // does not hide itself while macOS is still delivering the click.
-            if let Some(window) = app.get_webview_window("main") {
-                let win_clone = window.clone();
-                window.on_window_event(move |event| {
-                    if let tauri::WindowEvent::Focused(false) = event {
-                        if crate::tray::IGNORE_UNFOCUS_HIDE.load(std::sync::atomic::Ordering::SeqCst) {
-                            return;
-                        }
-                        let _ = win_clone.hide();
-                    }
-                });
+            // Automatically reveal the right-side screen Notch on launch!
+            if let Some(float_window) = app.get_webview_window("float") {
+                tray::reveal_float_window(&float_window);
+            }
 
-                // Auto popup on launch so user immediately knows ArkBar is running!
-                #[cfg(target_os = "macos")]
-                {
-                    if window.move_window_constrained(Position::TrayCenter).is_err() {
-                        let _ = window.move_window(Position::TopRight);
-                    }
-                }
-
-                #[cfg(not(target_os = "macos"))]
-                {
-                    if window.move_window_constrained(Position::TrayCenter).is_err() {
-                        let _ = window.move_window(Position::BottomRight);
-                    }
-                }
-
-                crate::tray::IGNORE_UNFOCUS_HIDE.store(true, std::sync::atomic::Ordering::SeqCst);
-                let _ = window.show();
-                let _ = window.set_focus();
-                std::thread::spawn(|| {
-                    std::thread::sleep(std::time::Duration::from_millis(600));
-                    crate::tray::IGNORE_UNFOCUS_HIDE.store(false, std::sync::atomic::Ordering::SeqCst);
-                });
+            // Hide menu bar icon by default per user request ("顶部菜单栏都可以不用展示")
+            if let Some(tray) = app.tray_by_id("ark-bar-tray") {
+                let _ = tray.set_visible(false);
             }
 
             Ok(())

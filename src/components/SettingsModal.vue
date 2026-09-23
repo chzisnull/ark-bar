@@ -89,6 +89,14 @@ function toggleAutoHide() {
   window.dispatchEvent(new Event('storage'));
 }
 
+const showTrayIcon = ref<boolean>(localStorage.getItem('arkbar_show_tray') === 'true');
+
+function toggleTrayIcon() {
+  showTrayIcon.value = !showTrayIcon.value;
+  localStorage.setItem('arkbar_show_tray', showTrayIcon.value ? 'true' : 'false');
+  invoke('set_tray_icon_visible', { visible: showTrayIcon.value }).catch(() => {});
+}
+
 // Connected providers list
 const connectedTabs = computed(() => localTabs.value.filter((t) => t.visible));
 
@@ -293,10 +301,10 @@ async function toggleNotchWindow() {
     <!-- ============================================================ -->
     <!-- LEFT SIDEBAR (Images 2)                                      -->
     <!-- ============================================================ -->
-    <div class="w-[210px] shrink-0 bg-[#121316] border-r border-white/5 flex flex-col justify-between p-3.5">
-      <div class="space-y-4">
+    <div class="w-[210px] shrink-0 bg-[#121316] border-r border-white/5 flex flex-col justify-between p-3.5 select-none">
+      <div class="space-y-4" data-tauri-drag-region>
         <!-- 1. Window Traffic Lights (macOS standard) -->
-        <div class="flex items-center gap-2 pt-1 pb-2 px-1">
+        <div class="flex items-center gap-2 pt-1 pb-2 px-1" data-tauri-drag-region>
           <button
             @click="emit('close')"
             class="w-3 h-3 rounded-full bg-[#ff5f56] hover:brightness-110 active:brightness-90 transition-all flex items-center justify-center group"
@@ -309,7 +317,7 @@ async function toggleNotchWindow() {
         </div>
 
         <!-- 2. Brand Logo & Name -->
-        <div class="flex items-center gap-2 px-1">
+        <div class="flex items-center gap-2 px-1" data-tauri-drag-region>
           <div class="w-6 h-6 rounded-md bg-gradient-to-br from-rose-500 to-amber-500 flex items-center justify-center text-white shadow-sm p-1">
             <ProviderIcon name="volcengine" class="w-4 h-4" />
           </div>
@@ -376,7 +384,7 @@ async function toggleNotchWindow() {
         </button>
 
         <div class="text-[11px] text-neutral-500">
-          ArkBar 0.4.0
+          ArkBar 0.4.1
         </div>
       </div>
     </div>
@@ -621,6 +629,25 @@ async function toggleNotchWindow() {
               <span
                 class="w-5 h-5 rounded-full bg-white shadow-md transform transition-transform"
                 :class="autoHide ? 'translate-x-4' : 'translate-x-0'"
+              />
+            </button>
+          </div>
+
+          <!-- 顶部系统菜单栏图标 -->
+          <div class="bg-[#202126] border border-white/5 rounded-xl p-4 flex items-center justify-between">
+            <div>
+              <h3 class="text-sm font-semibold text-white">在系统菜单栏显示图标</h3>
+              <p class="text-xs text-neutral-400 mt-0.5">默认关闭（推荐纯屏幕刘海交互模式）；开启后在顶部菜单栏显示常驻图标</p>
+            </div>
+
+            <button
+              @click="toggleTrayIcon"
+              class="w-10 h-6 rounded-full transition-colors relative flex items-center px-0.5"
+              :class="showTrayIcon ? 'bg-[#0a84ff]' : 'bg-neutral-700'"
+            >
+              <span
+                class="w-5 h-5 rounded-full bg-white shadow-md transform transition-transform"
+                :class="showTrayIcon ? 'translate-x-4' : 'translate-x-0'"
               />
             </button>
           </div>
