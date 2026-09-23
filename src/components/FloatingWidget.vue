@@ -189,13 +189,14 @@ function placeCard(targetEl: HTMLElement) {
   const H = window.innerHeight;
   const ch = cardRef.value?.offsetHeight || 260;
 
+  // Center vertically on ring, clamped so it never overflows top or bottom
   let top = Math.round(cy - ch / 2);
-  top = Math.max(12, Math.min(top, H - ch - 12));
+  top = Math.max(16, Math.min(top, H - ch - 16));
   cardTop.value = top;
 
   const ry = cy; // Ring vertical center
   const th = 36;
-  const ty = Math.max(top + 16 + th / 2, Math.min(top + ch - 16 - th / 2, ry));
+  const ty = Math.max(top + 18 + th / 2, Math.min(top + ch - 18 - th / 2, ry));
   tailTop.value = Math.round(ty - th / 2);
   reportHot();
 }
@@ -274,7 +275,10 @@ function handlePointerAt(clientX: number, clientY: number) {
     const changed = activeHoverId.value !== cell.id;
     activeHoverId.value = cell.id;
     if (changed) {
-      nextTick(() => placeCard(cell.el));
+      nextTick(() => {
+        placeCard(cell.el);
+        requestAnimationFrame(() => placeCard(cell.el));
+      });
     } else {
       placeCard(cell.el);
     }
@@ -545,35 +549,45 @@ onUnmounted(() => {
               top: `${cardTop}px`,
             }"
           >
-            <!-- Card Header: Logo + Title -->
-            <div class="flex items-center justify-between pb-3 border-b border-[#242424]">
-              <div class="flex items-center gap-2.5">
-                <div class="w-6 h-6 rounded-lg bg-[#1e1e1e] flex items-center justify-center p-1 text-white shadow-inner">
+            <!-- Card Header: Logo + Title + Status -->
+            <div class="flex items-center justify-between pb-2.5 mb-2.5 border-b border-white/[0.08]">
+              <div class="flex items-center gap-2">
+                <div class="w-6 h-6 rounded-lg bg-white/[0.07] border border-white/10 flex items-center justify-center p-1 text-white shadow-inner">
                   <ProviderIcon :name="activeHoverId" class="w-3.5 h-3.5" />
                 </div>
-                <h3 class="text-sm font-bold tracking-tight text-[#ffffff]">
-                  {{ activeHoverData?.provider_name || activeHoverId }} 用量
-                </h3>
+                <div class="flex flex-col">
+                  <h3 class="text-[13px] font-bold tracking-tight text-white leading-tight">
+                    {{ activeHoverData?.provider_name || activeHoverId }}
+                  </h3>
+                  <span class="text-[10px] text-[#8e8e93] leading-tight mt-0.5">
+                    {{ activeHoverData?.is_connected ? '运行正常' : '未连接' }}
+                  </span>
+                </div>
+              </div>
+
+              <div class="flex items-center gap-1.5 text-[11px] text-[#8e8e93]">
+                <span class="w-1.5 h-1.5 rounded-full" :class="activeHoverData?.is_connected ? 'bg-[#00FF88] shadow-[0_0_6px_#00FF88]' : 'bg-[#8e8e93]'" />
+                <span class="text-[10px]">实时配额</span>
               </div>
             </div>
 
-            <!-- Card Body: Groups & Limit Rows -->
-            <div class="pt-3 max-h-[360px] overflow-y-auto space-y-3">
+            <!-- Card Body: Groups & Limit Rows (Fits naturally without clunky scrollbars!) -->
+            <div class="space-y-2.5">
               <!-- Teamo Balance Card -->
               <div
                 v-if="activeHoverId === 'teamo' && activeHoverData?.extension?.balance"
-                class="bg-white/[0.04] rounded-xl p-3 border border-[#242424]"
+                class="bg-white/[0.03] rounded-xl p-3 border border-white/[0.07]"
               >
-                <div class="flex items-center justify-between text-xs text-[#808080] mb-1">
+                <div class="flex items-center justify-between text-[11px] text-[#8e8e93] mb-1.5">
                   <span>账户余额</span>
                   <span>今日消费</span>
                 </div>
                 <div class="flex items-center justify-between">
-                  <span class="text-xl font-bold text-[#00FF88]">
+                  <span class="text-xl font-bold text-[#00FF88] tabular-nums">
                     ${{ activeHoverData.extension.balance.value.toFixed(2) }}
-                    <span class="text-xs font-normal text-[#808080]">{{ activeHoverData.extension.balance.currency }}</span>
+                    <span class="text-xs font-normal text-[#8e8e93] ml-0.5">{{ activeHoverData.extension.balance.currency }}</span>
                   </span>
-                  <span class="text-sm font-semibold text-[#e8e8ea]">
+                  <span class="text-sm font-semibold text-[#f5f5f7] tabular-nums">
                     ${{ (activeHoverData.extension.today_cost?.value ?? 0).toFixed(2) }}
                   </span>
                 </div>
@@ -584,9 +598,9 @@ onUnmounted(() => {
                 <div
                   v-for="(group, gIdx) in activeHoverData.groups"
                   :key="gIdx"
-                  class="bg-white/[0.03] rounded-xl p-3 border border-[#242424] space-y-3"
+                  class="bg-white/[0.03] rounded-xl p-3 border border-white/[0.07] space-y-2.5"
                 >
-                  <div v-if="group.group_name" class="text-xs font-semibold text-[#808080]">
+                  <div v-if="group.group_name" class="text-[11px] font-bold text-[#8e8e93] uppercase tracking-wider">
                     {{ group.group_name }}
                   </div>
 
@@ -595,18 +609,18 @@ onUnmounted(() => {
                     :key="pIdx"
                     class="space-y-1.5"
                   >
-                    <!-- Label & Reset Time -->
-                    <div class="flex items-center justify-between text-xs">
-                      <span class="font-medium text-[#e8e8ea]">
+                    <!-- Label & Reset Time (nowrap + truncate to prevent awkward line breaks!) -->
+                    <div class="flex items-center justify-between gap-2 text-xs">
+                      <span class="font-medium text-[#f5f5f7] truncate">
                         {{ period.name || period.label }}
                       </span>
-                      <span class="text-[#808080] text-[11px]">
+                      <span class="text-[#8e8e93] text-[11px] whitespace-nowrap shrink-0 tabular-nums font-normal">
                         {{ formatResetLabel(period.reset_at) }}
                       </span>
                     </div>
 
-                    <!-- Progress Bar -->
-                    <div class="h-1.5 w-full bg-[#2d2d2d] rounded-full overflow-hidden">
+                    <!-- Progress Bar Track & Fill -->
+                    <div class="h-1.5 w-full bg-[#26272b] rounded-full overflow-hidden">
                       <div
                         class="h-full rounded-full transition-all duration-700 ease-out"
                         :style="{
@@ -617,7 +631,7 @@ onUnmounted(() => {
                     </div>
 
                     <!-- Ratio Breakdown -->
-                    <div class="text-[11px] text-[#808080] font-medium">
+                    <div class="text-[11px] text-[#8e8e93] font-medium tabular-nums">
                       {{ Math.round(period.used_percent) }}% 已用 · {{ Math.max(0, 100 - Math.round(period.used_percent)) }}% 剩余
                     </div>
                   </div>
@@ -625,36 +639,33 @@ onUnmounted(() => {
               </template>
 
               <!-- Loading / Syncing placeholder if no data yet -->
-              <div v-else class="py-6 text-center text-xs text-[#808080] flex flex-col items-center gap-2">
-                <RotateCw class="w-4 h-4 animate-spin text-[#808080]" />
+              <div v-else class="py-6 text-center text-xs text-[#8e8e93] flex flex-col items-center gap-2">
+                <RotateCw class="w-4 h-4 animate-spin text-[#8e8e93]" />
                 <span>正在同步用量读数…</span>
               </div>
 
               <!-- Token Summary (Tokens & Cache hit rate) -->
               <div
                 v-if="activeHoverData?.token_summary"
-                class="flex items-center justify-between px-1 text-[11px] text-[#808080]"
+                class="flex items-center justify-between px-1 text-[11px] text-[#8e8e93] pt-0.5"
               >
-                <span>今日 Token: {{ activeHoverData.token_summary.today_tokens.toLocaleString() }}</span>
-                <span v-if="activeHoverData.token_summary.cache_hit_rate">
+                <span class="tabular-nums">今日 Token: {{ activeHoverData.token_summary.today_tokens.toLocaleString() }}</span>
+                <span v-if="activeHoverData.token_summary.cache_hit_rate" class="tabular-nums">
                   ⚡ 缓存命中 {{ activeHoverData.token_summary.cache_hit_rate }}%
                 </span>
               </div>
             </div>
 
             <!-- Footer: Live Status Row (Codenotch: 工作中 刚刚) -->
-            <div class="pt-3 mt-2 border-t border-[#242424] flex items-center justify-between text-xs text-[#808080]">
-              <div class="flex flex-col">
-                <span class="font-medium text-[#e8e8ea]">{{ activeHoverData?.provider_name || activeHoverId }}</span>
-                <span class="text-[10px] text-[#808080]">已连接</span>
+            <div class="pt-2.5 mt-2.5 border-t border-white/[0.08] flex items-center justify-between text-xs text-[#8e8e93]">
+              <div class="flex items-center gap-1.5">
+                <span class="font-medium text-[#f5f5f7]">{{ activeHoverData?.provider_name || activeHoverId }}</span>
               </div>
 
-              <div class="flex flex-col items-end">
-                <div class="flex items-center gap-1 text-[11px] text-[#e8e8ea]">
-                  <RotateCw class="w-3 h-3 text-[#808080] animate-spin" />
-                  <span>工作中</span>
-                </div>
-                <span class="text-[10px] text-[#808080] mt-0.5">刚刚</span>
+              <div class="flex items-center gap-1.5 text-[11px] text-[#e8e8ea]">
+                <RotateCw class="w-3 h-3 text-[#8e8e93] animate-spin" />
+                <span>工作中</span>
+                <span class="text-[10px] text-[#8e8e93]">· 刚刚</span>
               </div>
             </div>
           </div>
@@ -995,21 +1006,50 @@ onUnmounted(() => {
 #card {
   position: absolute;
   right: 98px;
-  width: 254px;
-  max-width: 254px;
-  background: #0a0a0a;
-  border: 1px solid #242424;
-  border-radius: 16px;
-  padding: 16px;
+  width: 290px;
+  max-width: 290px;
+  background: #0e0f14;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 18px;
+  padding: 14px 16px;
   color: #ffffff;
-  box-shadow: 0 20px 45px rgba(0, 0, 0, 0.75);
-  overflow-wrap: anywhere;
-  min-width: 0;
-  max-height: calc(100% - 24px);
+  box-shadow: 0 24px 50px -10px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(255, 255, 255, 0.04);
+  max-height: calc(100% - 32px);
   overflow-y: auto;
-  scrollbar-width: thin;
+  overflow-x: hidden;
   z-index: 50;
-  transition: top 0.15s ease-out;
+  transition: top 0.16s cubic-bezier(0.32, 0.72, 0.24, 1);
+
+  /* Minimalist Apple overlay scrollbar: invisible by default, subtle pill on hover */
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+#card:hover {
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+
+#card::-webkit-scrollbar {
+  width: 4px;
+}
+
+#card::-webkit-scrollbar-track {
+  background: transparent;
+  margin: 10px 0;
+}
+
+#card::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 9999px;
+  transition: background-color 0.2s ease;
+}
+
+#card:hover::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+#card::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.45);
 }
 
 #tail {
@@ -1017,11 +1057,11 @@ onUnmounted(() => {
   right: 69px;
   width: 32px;
   height: 36px;
-  background: #0a0a0a;
+  background: #0e0f14;
   clip-path: path('M0 0C0 9 18.56 13.68 32 18C18.56 22.32 0 27 0 36Z');
   z-index: 50;
   pointer-events: none;
-  transition: top 0.15s ease-out;
+  transition: top 0.16s cubic-bezier(0.32, 0.72, 0.24, 1);
 }
 
 /* Popover Speech-Bubble Spring Animation */
