@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted, defineAsyncComponent } from 'vue';
 import type { ProviderAmount, ProviderType, ProviderUsageData, UpdateInfo, ProviderQuotaPeriod, ProviderTabConfig } from '../types';
-import { RefreshCw, Settings, Clock, Sparkles, Download, X, KeyRound, ExternalLink, TriangleAlert, Gauge, Coins } from 'lucide-vue-next';
+import { RefreshCw, Settings, Clock, Sparkles, Download, X, KeyRound, ExternalLink, TriangleAlert, Gauge, Coins, Monitor } from 'lucide-vue-next';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { invoke } from '@tauri-apps/api/core';
+import ProviderIcon from './ProviderIcon.vue';
 import TokenStatsCard from './TokenStatsCard.vue';
 import TokenHistoryModal from './TokenHistoryModal.vue';
 
@@ -35,6 +37,17 @@ watch(() => props.updateInfo, (val) => {
     bannerDismissed.value = false;
   }
 });
+
+async function toggleNotchWindow() {
+  try {
+    const isOpen = await invoke<boolean>('is_float_window_open');
+    if (isOpen) {
+      await invoke('close_float_window');
+    } else {
+      await invoke('open_float_window');
+    }
+  } catch {}
+}
 
 function formatTokens(tokens: number): string {
   if (tokens == null || isNaN(tokens)) return '0';
@@ -316,23 +329,29 @@ function formatShortReset(dateStr?: string): string {
         >
           <RefreshCw
             v-if="loadingMap?.[item.id]"
-            class="w-2.5 h-2.5 animate-spin text-indigo-300"
+            class="w-3 h-3 animate-spin text-indigo-300 shrink-0"
           />
-          <span
+          <ProviderIcon
             v-else
-            class="w-1.5 h-1.5 rounded-full shrink-0"
+            :name="item.id"
+            class="w-3.5 h-3.5 shrink-0"
             :class="[
-              props.providersData[item.id]?.is_connected
-                ? (activeProvider === item.id ? 'bg-emerald-300' : 'bg-emerald-500')
-                : 'bg-slate-600'
+              activeProvider === item.id ? 'text-indigo-200' : 'text-slate-400'
             ]"
-          ></span>
+          />
           <span>{{ item.name }}</span>
         </button>
       </div>
 
       <!-- Action Buttons -->
       <div class="flex items-center gap-1 shrink-0">
+        <button
+          @click="toggleNotchWindow"
+          class="w-7 h-7 rounded-lg grid place-items-center text-slate-400 hover:text-white hover:bg-slate-800/80 transition-colors"
+          title="切换屏幕刘海 (Codenotch)"
+        >
+          <Monitor class="w-3.5 h-3.5" />
+        </button>
         <button
           @click="$emit('refresh')"
           :disabled="isRefreshing"
@@ -344,7 +363,7 @@ function formatShortReset(dateStr?: string): string {
         <button
           @click="$emit('open-settings')"
           class="relative w-7 h-7 rounded-lg grid place-items-center text-slate-400 hover:text-white hover:bg-slate-800/80 transition-colors"
-          title="设置"
+          title="偏好设置"
         >
           <Settings class="w-3.5 h-3.5" />
           <span

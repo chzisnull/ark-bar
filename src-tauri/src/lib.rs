@@ -149,6 +149,7 @@ pub fn run() {
             tray::end_drag_move,
             tray::exit_app,
             tray::set_float_window_size,
+            tray::set_main_window_size,
         ])
         .run(tauri::generate_context!())
         .expect("运行 ArkBar 应用时出错");

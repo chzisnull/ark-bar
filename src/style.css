@@ -51,3 +51,79 @@ html, body, #app {
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(156, 163, 175, 0.7);
 }
+
+/* Apple-style spring cubic-bezier transitions */
+.spring-transition {
+  transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.spring-pop-enter-active {
+  transition: opacity 0.22s cubic-bezier(0.16, 1, 0.3, 1), transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.spring-pop-leave-active {
+  transition: opacity 0.16s ease-in, transform 0.16s ease-in;
+}
+.spring-pop-enter-from {
+  opacity: 0;
+  transform: translateX(14px) scale(0.94);
+}
+.spring-pop-leave-to {
+  opacity: 0;
+  transform: translateX(8px) scale(0.96);
+}
+
+/* Left-docked popover animation */
+.spring-pop-left-enter-from {
+  opacity: 0;
+  transform: translateX(-14px) scale(0.94);
+}
+.spring-pop-left-leave-to {
+  opacity: 0;
+  transform: translateX(-8px) scale(0.96);
+}
+
+/* Circular ring SVG animations */
+.gauge-ring {
+  transition: stroke-dashoffset 0.85s cubic-bezier(0.34, 1.56, 0.64, 1), stroke 0.4s ease;
+}
+
+/* Glassmorphism utility */
+.glass-notch {
+  background: rgba(22, 23, 27, 0.92);
+  backdrop-filter: blur(28px) saturate(180%);
+  -webkit-backdrop-filter: blur(28px) saturate(180%);
+}
+
+.glass-popover {
+  background: rgba(246, 246, 248, 0.94);
+  backdrop-filter: blur(32px) saturate(190%);
+  -webkit-backdrop-filter: blur(32px) saturate(190%);
+}
+
+.dark .glass-popover {
+  background: rgba(30, 31, 36, 0.94);
+}
+
+/* Caret triangle pointers */
+.caret-right {
+  width: 0;
+  height: 0;
+  border-top: 9px solid transparent;
+  border-bottom: 9px solid transparent;
+  border-left: 11px solid rgba(246, 246, 248, 0.94);
+}
+.dark .caret-right {
+  border-left-color: rgba(30, 31, 36, 0.94);
+}
+
+.caret-left {
+  width: 0;
+  height: 0;
+  border-top: 9px solid transparent;
+  border-bottom: 9px solid transparent;
+  border-right: 11px solid rgba(246, 246, 248, 0.94);
+}
+.dark .caret-left {
+  border-right-color: rgba(30, 31, 36, 0.94);
+}
+

@@ -24,12 +24,21 @@ const loadingMap = ref<Record<ProviderType, boolean>>({
 });
 
 const DEFAULT_PROVIDER_TABS: ProviderTabConfig[] = [
-  { id: 'volcengine', name: '火山方舟', visible: true },
-  { id: 'antigravity', name: 'Antigravity', visible: true },
-  { id: 'grok', name: 'Grok', visible: true },
-  { id: 'codex', name: 'Codex', visible: true },
-  { id: 'teamo', name: 'Teamo', visible: true },
+  { id: 'antigravity', name: 'Antigravity', visible: true, notch_metric: 'session' },
+  { id: 'grok', name: 'Grok', visible: true, notch_metric: 'session' },
+  { id: 'volcengine', name: '火山方舟', visible: true, notch_metric: 'weekly' },
+  { id: 'codex', name: 'Codex', visible: true, notch_metric: 'session' },
+  { id: 'teamo', name: 'Teamo', visible: true, notch_metric: 'balance' },
 ];
+
+watch(currentView, (newView) => {
+  if (isFloatWindow.value) return;
+  if (newView === 'settings') {
+    invoke('set_main_window_size', { width: 680, height: 530 }).catch(() => {});
+  } else {
+    invoke('set_main_window_size', { width: 380, height: 550 }).catch(() => {});
+  }
+});
 
 function loadProviderTabsConfig(): ProviderTabConfig[] {
   try {
@@ -54,6 +63,9 @@ function loadProviderTabsConfig(): ProviderTabConfig[] {
           id: item.id,
           name: nameMap[item.id],
           visible: item.visible !== false,
+          notch_metric: item.notch_metric,
+          model_filter: item.model_filter,
+          notification_enabled: item.notification_enabled,
         });
       }
     }
@@ -63,6 +75,8 @@ function loadProviderTabsConfig(): ProviderTabConfig[] {
           id,
           name: nameMap[id],
           visible: true,
+          notch_metric: 'session',
+          model_filter: 'all',
         });
       }
     }

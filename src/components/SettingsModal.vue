@@ -1,11 +1,29 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, nextTick } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import type { EnvironmentStatus, UpdateInfo, ProviderType, TrayPercentMode, ProviderTabConfig } from '../types';
-import { ArrowLeft, RefreshCw, Download, CheckCircle2, AlertCircle, Power, ExternalLink, ChevronDown, ChevronUp, Sparkles, Eye, EyeOff } from 'lucide-vue-next';
+import type {
+  EnvironmentStatus,
+  UpdateInfo,
+  ProviderType,
+  TrayPercentMode,
+  ProviderTabConfig,
+  SettingsNavTab,
+  NotchPosition,
+  NotchMetric,
+} from '../types';
+import ProviderIcon from './ProviderIcon.vue';
+import UpdateModal from './UpdateModal.vue';
+import {
+  GripVertical,
+  Bell,
+  Palette,
+  KeyRound,
+  Sliders,
+  Power,
+  RefreshCw,
+} from 'lucide-vue-next';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart';
-import UpdateModal from './UpdateModal.vue';
 
 const props = defineProps<{
   envStatus: EnvironmentStatus | null;
@@ -27,801 +45,735 @@ const emit = defineEmits<{
   (e: 'update-checked', val: UpdateInfo): void;
 }>();
 
+// Navigation Tabs
+const activeNavTab = ref<SettingsNavTab>('accounts');
+
+// Provider tabs copy
 const localTabs = ref<ProviderTabConfig[]>(
-  props.providerTabs ? JSON.parse(JSON.stringify(props.providerTabs)) : [
-    { id: 'volcengine', name: '火山方舟', visible: true },
-    { id: 'antigravity', name: 'Antigravity', visible: true },
-    { id: 'grok', name: 'Grok', visible: true },
-    { id: 'codex', name: 'Codex', visible: true },
-    { id: 'teamo', name: 'Teamo', visible: true },
-  ]
+  props.providerTabs
+    ? JSON.parse(JSON.stringify(props.providerTabs))
+    : [
+        { id: 'antigravity', name: 'Antigravity', visible: true, notch_metric: 'session', model_filter: 'gemini' },
+        { id: 'grok', name: 'Grok', visible: true, notch_metric: 'session', model_filter: 'all' },
+        { id: 'volcengine', name: '火山方舟', visible: true, notch_metric: 'weekly', model_filter: 'all' },
+        { id: 'codex', name: 'Codex', visible: true, notch_metric: 'session', model_filter: 'all' },
+        { id: 'teamo', name: 'Teamo', visible: true, notch_metric: 'balance', model_filter: 'all' },
+      ]
 );
 
-watch(() => props.providerTabs, (newVal) => {
-  if (newVal) {
-    localTabs.value = JSON.parse(JSON.stringify(newVal));
+watch(
+  () => props.providerTabs,
+  (newVal) => {
+    if (newVal) {
+      localTabs.value = JSON.parse(JSON.stringify(newVal));
+    }
+  },
+  { deep: true }
+);
+
+// Notch preferences
+const notchPosition = ref<NotchPosition>(
+  (localStorage.getItem('arkbar_notch_position') as NotchPosition) || 'right'
+);
+const autoHide = ref<boolean>(localStorage.getItem('arkbar_notch_auto_hide') === 'true');
+
+function setNotchPosition(pos: NotchPosition) {
+  notchPosition.value = pos;
+  localStorage.setItem('arkbar_notch_position', pos);
+  window.dispatchEvent(new Event('storage'));
+}
+
+function toggleAutoHide() {
+  autoHide.value = !autoHide.value;
+  localStorage.setItem('arkbar_notch_auto_hide', autoHide.value ? 'true' : 'false');
+  window.dispatchEvent(new Event('storage'));
+}
+
+// Connected providers list
+const connectedTabs = computed(() => localTabs.value.filter((t) => t.visible));
+
+// Disconnected / Inactive services
+interface InactiveService {
+  id: string;
+  name: string;
+  desc: string;
+  icon: string;
+  enabled: boolean;
+}
+
+const inactiveServices = ref<InactiveService[]>([
+  { id: 'claude', name: 'Claude', desc: '已退出 — 不再读取，也不再保存读数。', icon: 'claude', enabled: false },
+  { id: 'cursor', name: 'Cursor', desc: '未连接 — 需要本地已运行并登录 Cursor。', icon: 'cursor', enabled: false },
+  { id: 'deepseek', name: 'DeepSeek', desc: '未配置 — 支持填入 API Key 监控余额。', icon: 'deepseek', enabled: false },
+  { id: 'ollama', name: 'Ollama', desc: '未连接 — 本地 11434 端口模型监控。', icon: 'ollama', enabled: false },
+]);
+
+// Drag & Drop Reordering
+let draggedIndex: number | null = null;
+
+function handleDragStart(index: number, e: DragEvent) {
+  draggedIndex = index;
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move';
   }
-}, { deep: true });
+}
 
-const visibleCount = computed(() => localTabs.value.filter((t) => t.visible).length);
+function handleDragOver(e: DragEvent) {
+  e.preventDefault();
+}
 
-function moveProvider(index: number, delta: number) {
-  const newIndex = index + delta;
-  if (newIndex < 0 || newIndex >= localTabs.value.length) return;
-  const [moved] = localTabs.value.splice(index, 1);
-  localTabs.value.splice(newIndex, 0, moved);
+function handleDrop(targetIndex: number) {
+  if (draggedIndex == null || draggedIndex === targetIndex) return;
+  const [moved] = localTabs.value.splice(draggedIndex, 1);
+  localTabs.value.splice(targetIndex, 0, moved);
+  draggedIndex = null;
   emit('update-provider-tabs', [...localTabs.value]);
 }
 
 function toggleProviderVisibility(id: ProviderType) {
   const item = localTabs.value.find((t) => t.id === id);
   if (!item) return;
-  if (item.visible && visibleCount.value <= 1) {
-    return;
-  }
+  if (item.visible && connectedTabs.value.length <= 1) return; // Keep at least one
   item.visible = !item.visible;
   emit('update-provider-tabs', [...localTabs.value]);
 }
 
+function updateProviderNotchMetric(id: ProviderType, metric: NotchMetric) {
+  const item = localTabs.value.find((t) => t.id === id);
+  if (item) {
+    item.notch_metric = metric;
+    emit('update-provider-tabs', [...localTabs.value]);
+  }
+}
+
+function updateProviderModelFilter(id: ProviderType, filter: string) {
+  const item = localTabs.value.find((t) => t.id === id);
+  if (item) {
+    item.model_filter = filter;
+    emit('update-provider-tabs', [...localTabs.value]);
+  }
+}
+
+// Provider Metadata details
 function getProviderMeta(id: ProviderType) {
   switch (id) {
-    case 'volcengine':
+    case 'antigravity':
       return {
-        icon: '🌋',
-        title: '火山方舟 Coding Plan',
-        sub: 'ArkCLI 登录态与席位配额',
+        title: 'Antigravity',
+        sub: '个人 · 来自 Antigravity',
+        hint: '在 Antigravity 里切换账号，刘海会跟上。',
+        url: 'https://antigravity.google.com',
+        urlText: '打开 Antigravity',
       };
     case 'grok':
       return {
-        icon: '⚡',
-        title: 'xAI Grok',
-        sub: '自动识别，无需配置',
+        title: 'Grok',
+        sub: 'caohanzhou123@gmail.com · 来自 Grok',
+        hint: '在持有该账号的工具里切换，刘海会跟上。',
+        url: 'https://grok.com',
+        urlText: '打开 grok.com',
       };
-    case 'antigravity':
+    case 'volcengine':
       return {
-        icon: '🌐',
-        title: 'Google Antigravity',
-        sub: '自动集成，无需配置',
+        title: '火山方舟',
+        sub: props.envStatus?.user_name ? `${props.envStatus.user_name} · 来自 ArkCLI` : '主账号 · 来自 ArkCLI',
+        hint: '在终端执行 arkcli 切换账号，刘海会跟上。',
+        url: 'https://console.volcengine.com/ark',
+        urlText: '打开 火山方舟',
       };
     case 'codex':
       return {
-        icon: '🤖',
         title: 'OpenAI Codex',
-        sub: '自动识别，无需配置',
+        sub: '本地会话与日志 · 来自 Codex',
+        hint: '实时提取本地会话与 Token 消耗。',
+        url: 'https://platform.openai.com',
+        urlText: '打开 OpenAI',
       };
     case 'teamo':
       return {
-        icon: '🛰️',
         title: 'TeamoRouter',
-        sub: '填入 sk-teamo- API Key',
+        sub: '官方开放接口 · 来自 Teamo',
+        hint: '填入 sk-teamo- API Key 实时读取余额与用量。',
+        url: 'https://teamorouter.cn',
+        urlText: '打开 TeamoRouter',
       };
   }
 }
 
-const isCheckingUpdate = ref(false);
-const updateResult = ref<UpdateInfo | null>(props.initialUpdateInfo || null);
-const scrollContainerRef = ref<HTMLElement | null>(null);
-
-watch(() => props.initialUpdateInfo, (val) => {
-  if (val) updateResult.value = val;
-});
-const updateError = ref('');
-const isFloatOpen = ref(false);
-// 菜单栏图标显隐；系统注册状态由前端持久化 + set_tray_icon_visible 应用
-const trayIconVisible = ref(localStorage.getItem('arkbar_tray_icon_visible') !== 'false');
-const isMac = navigator.platform.toUpperCase().includes('MAC');
-const trayHotkeyLabel = isMac ? '⌘⇧A' : 'Ctrl+Shift+A';
-
-async function toggleTrayIcon() {
-  const next = !trayIconVisible.value;
-  trayIconVisible.value = next;
-  localStorage.setItem('arkbar_tray_icon_visible', String(next));
-  try {
-    await invoke('set_tray_icon_visible', { visible: next });
-  } catch {
-    trayIconVisible.value = !next;
-    localStorage.setItem('arkbar_tray_icon_visible', String(!next));
-  }
-}
-const isAutostartEnabled = ref<boolean | null>(null);
-const isAutostartLoading = ref(false);
-const isAutostartUpdating = ref(false);
-const autostartError = ref('');
-const hasTeamoToken = ref(false);
-const teamoTokenInput = ref('');
-const teamoTokenVisible = ref(false);
-const teamoTokenSaving = ref(false);
-const teamoTokenMessage = ref('');
-const showTeamoTokenSection = ref(false);
-let autostartStatusRequestId = 0;
-const showUpdateModal = ref(false);
-const appVersion = computed(() => updateResult.value?.current_version || props.initialUpdateInfo?.current_version || '0.3.2');
-
-// Tray Target Provider selection
-const trayTarget = ref<ProviderType | 'auto'>(
-  (localStorage.getItem('arkbar_tray_target') as ProviderType | 'auto') || 'volcengine'
-);
-
-// Desktop Floating Widget Primary Provider
-const floatPrimaryProvider = ref<ProviderType>(
-  (localStorage.getItem('arkbar_float_primary_provider') as ProviderType) ||
-  (localStorage.getItem('arkbar_float_provider') as ProviderType) ||
-  'volcengine'
-);
-
-function handleFloatPrimaryChange(e: Event) {
-  const target = (e.target as HTMLSelectElement).value as ProviderType;
-  floatPrimaryProvider.value = target;
-  localStorage.setItem('arkbar_float_primary_provider', target);
-  localStorage.setItem('arkbar_float_provider', target);
-  window.dispatchEvent(new StorageEvent('storage', {
-    key: 'arkbar_float_primary_provider',
-    newValue: target,
-  }));
-}
-
-async function toggleFloatWindow() {
-  if (isFloatOpen.value) {
-    await invoke('close_float_window');
-    isFloatOpen.value = false;
-  } else {
-    await invoke('open_float_window');
-    isFloatOpen.value = true;
-  }
-}
-
-function handleTrayTargetChange(e: Event) {
-  const target = (e.target as HTMLSelectElement).value as ProviderType | 'auto';
-  trayTarget.value = target;
-  localStorage.setItem('arkbar_tray_target', target);
-  emit('update-tray-target', target);
-}
-
-function formatAutostartError(err: unknown): string {
-  if (typeof err === 'string' && err.trim()) return err;
-  if (err && typeof err === 'object' && 'message' in err) {
-    const message = String((err as { message?: unknown }).message || '').trim();
-    if (message) return message;
-  }
-  return '未知错误';
-}
-
-async function loadAutostartStatus() {
-  if (isAutostartLoading.value || isAutostartUpdating.value) return;
-  const requestId = ++autostartStatusRequestId;
-  isAutostartLoading.value = true;
-  autostartError.value = '';
-  try {
-    const enabled = await isEnabled();
-    if (requestId === autostartStatusRequestId) {
-      isAutostartEnabled.value = enabled;
-    }
-  } catch (err) {
-    if (requestId === autostartStatusRequestId) {
-      isAutostartEnabled.value = null;
-      autostartError.value = `读取开机自动启动状态失败：${formatAutostartError(err)}`;
-    }
-  } finally {
-    if (requestId === autostartStatusRequestId) {
-      isAutostartLoading.value = false;
-    }
-  }
-}
-
-async function toggleAutostart() {
-  if (
-    isAutostartEnabled.value === null ||
-    isAutostartLoading.value ||
-    isAutostartUpdating.value
-  ) {
-    return;
-  }
-
-  const previous = isAutostartEnabled.value;
-  const next = !previous;
-  isAutostartUpdating.value = true;
-  autostartError.value = '';
-  isAutostartEnabled.value = next;
-
-  try {
-    if (next) {
-      await enable();
-    } else {
-      await disable();
-    }
-  } catch (err) {
-    // 注册/取消本身失败时，系统状态仍应保持 previous。
-    isAutostartEnabled.value = previous;
-    autostartError.value = `设置开机自动启动失败：${formatAutostartError(err)}`;
-    isAutostartUpdating.value = false;
-    return;
-  }
-
-  try {
-    // 以系统注册状态为准，避免底层调用部分成功时 UI 假状态。
-    isAutostartEnabled.value = await isEnabled();
-  } catch (err) {
-    // enable/disable 已经成功，校验失败时不能假装回滚；标记未知，
-    // 让用户通过重试重新读取真实系统状态。
-    isAutostartEnabled.value = null;
-    autostartError.value = `已更新开机启动设置，但读取最新状态失败：${formatAutostartError(err)}`;
-  } finally {
-    isAutostartUpdating.value = false;
-  }
-}
-
-async function handleCheckUpdate() {
-  if (isCheckingUpdate.value) return;
-  const savedScrollTop = scrollContainerRef.value?.scrollTop;
-  isCheckingUpdate.value = true;
-  updateError.value = '';
-  try {
-    const info = await invoke<UpdateInfo>('check_for_updates', { force: true });
-    updateResult.value = info;
-    emit('update-checked', info);
-  } catch (err: any) {
-    updateError.value = `检查更新失败: ${err}`;
-  } finally {
-    isCheckingUpdate.value = false;
-    await nextTick();
-    if (scrollContainerRef.value && savedScrollTop != null) {
-      scrollContainerRef.value.scrollTop = savedScrollTop;
-    }
-  }
-}
-
-async function openReleaseUrl() {
-  if (updateResult.value?.release_url) {
-    try {
-      await openUrl(updateResult.value.release_url);
-    } catch {
-      window.open(updateResult.value.release_url, '_blank');
-    }
-  }
-}
-
-async function handleQuit() {
-  await invoke('hide_window');
-  window.close();
-}
-
-async function saveTeamoToken() {
-  if (teamoTokenSaving.value) return;
-  const token = teamoTokenInput.value.trim();
-  teamoTokenSaving.value = true;
-  teamoTokenMessage.value = '';
-  try {
-    await invoke('set_provider_token', { provider: 'teamo', token });
-    hasTeamoToken.value = !!token;
-    teamoTokenInput.value = '';
-    showTeamoTokenSection.value = false;
-    teamoTokenMessage.value = token ? 'TeamoRouter API Key 已保存' : 'TeamoRouter API Key 已清除';
-    emit('provider-token-updated');
-  } catch (err) {
-    teamoTokenMessage.value = formatAutostartError(err);
-  } finally {
-    teamoTokenSaving.value = false;
-  }
-}
+// Token Key Storage for Teamo and custom tokens
+const showTeamoKeyInput = ref(false);
+const teamoKey = ref('');
+const teamoKeySaved = ref(false);
 
 onMounted(async () => {
-  void loadAutostartStatus();
   try {
-    isFloatOpen.value = await invoke<boolean>('is_float_window_open');
+    const key = await invoke<string | null>('read_provider_token', { provider: 'teamo' });
+    if (key) teamoKey.value = key;
   } catch {}
+
   try {
-    hasTeamoToken.value = !!(await invoke<string | null>('read_provider_token', { provider: 'teamo' }));
+    autostartEnabled.value = await isEnabled();
   } catch {}
 });
+
+async function saveTeamoKey() {
+  try {
+    await invoke('set_provider_token', { provider: 'teamo', token: teamoKey.value.trim() });
+    teamoKeySaved.value = true;
+    emit('provider-token-updated');
+    setTimeout(() => {
+      teamoKeySaved.value = false;
+    }, 2000);
+  } catch {}
+}
+
+// Autostart toggle
+const autostartEnabled = ref(false);
+async function toggleAutostart() {
+  try {
+    if (autostartEnabled.value) {
+      await disable();
+      autostartEnabled.value = false;
+    } else {
+      await enable();
+      autostartEnabled.value = true;
+    }
+  } catch {}
+}
+
+// Exit App
+function handleExit() {
+  invoke('exit_app').catch(() => {});
+}
+
+// Open External URL
+function openExternal(url: string) {
+  openUrl(url).catch(() => window.open(url, '_blank'));
+}
+
+// Notifications Toggles
+const alertHighQuota = ref(true);
+const alertReset = ref(true);
+
+// Update Modal & checking
+const isCheckingUpdate = ref(false);
+const showUpdateModal = ref(false);
+const currentUpdateInfo = ref<UpdateInfo | null>(props.initialUpdateInfo || null);
+
+async function checkForUpdate() {
+  isCheckingUpdate.value = true;
+  try {
+    const res = await invoke<UpdateInfo>('check_for_updates');
+    currentUpdateInfo.value = res;
+    emit('update-checked', res);
+    if (res.has_update) {
+      showUpdateModal.value = true;
+    }
+  } catch {
+  } finally {
+    isCheckingUpdate.value = false;
+  }
+}
+
+// Float notch toggle
+async function toggleNotchWindow() {
+  try {
+    const isOpen = await invoke<boolean>('is_float_window_open');
+    if (isOpen) {
+      await invoke('close_float_window');
+    } else {
+      await invoke('open_float_window');
+    }
+  } catch {}
+}
 </script>
 
 <template>
-  <div class="flex flex-col h-full select-none text-slate-200 bg-[#0e131f]/95">
-    <!-- Top Header（与主面板同规格 chrome） -->
-    <div class="h-11 px-4 shrink-0 bg-[#141b2d]/90 border-b border-slate-800/80 flex items-center gap-2">
-      <button
-        type="button"
-        @click="$emit('close')"
-        class="w-7 h-7 rounded-lg grid place-items-center text-slate-400 hover:text-white hover:bg-slate-800/80 transition-colors"
-      >
-        <ArrowLeft class="w-4 h-4" />
-      </button>
-      <h3 class="text-[13px] font-bold text-white">设置</h3>
-      <div class="ml-auto flex items-center gap-1.5">
-        <span
-          v-if="updateResult?.has_update"
-          class="inline-flex items-center gap-1 h-[18px] px-2 rounded-full text-[10px] font-medium bg-amber-500/15 border border-amber-500/40 text-amber-400"
-        >
-          <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping"></span>
-          有新版 v{{ updateResult.latest_version }}
-        </span>
-        <span class="inline-flex items-center h-[18px] px-2 rounded-full text-[10px] font-mono bg-slate-800/80 border border-slate-700/60 text-slate-400">
-          v{{ appVersion }}
-        </span>
-      </div>
-    </div>
-
-    <!-- 🚀 Top Update Notification Banner (新版本置顶提醒) -->
-    <div
-      v-if="updateResult?.has_update"
-      class="shrink-0 bg-gradient-to-r from-amber-500/20 via-orange-500/20 to-amber-500/10 border-b border-amber-500/30 px-4 py-2 flex items-center justify-between text-xs"
-    >
-      <div class="flex items-center gap-1.5 text-amber-300 font-medium">
-        <Sparkles class="w-3.5 h-3.5 text-amber-400 shrink-0 animate-pulse" />
-        <span class="text-[11px]">发现新版本 <strong>v{{ updateResult.latest_version }}</strong></span>
-      </div>
-      <div class="flex items-center gap-1.5">
-        <button
-          type="button"
-          @click="openReleaseUrl"
-          class="h-6 px-2 bg-slate-800/80 hover:bg-slate-700 text-slate-300 rounded text-[10px] transition"
-        >
-          网页下载
-        </button>
-        <button
-          type="button"
-          @click="showUpdateModal = true"
-          class="h-6 px-2.5 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-bold rounded text-[10px] flex items-center gap-1 transition shadow-sm"
-        >
-          <Download class="w-2.5 h-2.5" />
-          立即在线更新
-        </button>
-      </div>
-    </div>
-
-    <!-- Content Sections -->
-    <div ref="scrollContainerRef" class="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-4 text-xs" style="overflow-anchor: auto;">
-      <!-- 1. Multi-Provider Integration -->
-      <section>
-        <div class="flex items-center justify-between px-0.5 mb-2">
-          <span class="text-[11px] font-semibold text-slate-400">服务商集成与顶部排序</span>
-          <span class="text-[10px] text-slate-400">支持排序与显隐开关</span>
-        </div>
-        <div class="rounded-xl border border-slate-800/60 bg-[#131a2a] divide-y divide-slate-800/60 overflow-hidden">
-          <div
-            v-for="(item, idx) in localTabs"
-            :key="item.id"
-            class="px-3 py-2.5 flex items-center gap-2.5 transition-colors"
-            :class="[!item.visible ? 'opacity-50 bg-slate-950/20' : '']"
+  <div class="w-full h-full flex bg-[#18191c] text-neutral-100 select-none overflow-hidden font-sans">
+    <!-- ============================================================ -->
+    <!-- LEFT SIDEBAR (Images 2)                                      -->
+    <!-- ============================================================ -->
+    <div class="w-[210px] shrink-0 bg-[#121316] border-r border-white/5 flex flex-col justify-between p-3.5">
+      <div class="space-y-4">
+        <!-- 1. Window Traffic Lights (macOS standard) -->
+        <div class="flex items-center gap-2 pt-1 pb-2 px-1">
+          <button
+            @click="emit('close')"
+            class="w-3 h-3 rounded-full bg-[#ff5f56] hover:brightness-110 active:brightness-90 transition-all flex items-center justify-center group"
+            title="关闭设置"
           >
-            <!-- Reorder Arrows (↑ / ↓) -->
-            <div class="flex flex-col gap-0.5 shrink-0">
-              <button
-                type="button"
-                @click="moveProvider(idx, -1)"
-                :disabled="idx === 0"
-                class="w-5 h-3.5 rounded grid place-items-center text-slate-400 hover:text-white hover:bg-slate-800 disabled:opacity-20 disabled:hover:bg-transparent transition cursor-pointer"
-                title="上移顺序"
-              >
-                <ChevronUp class="w-3 h-3" />
-              </button>
-              <button
-                type="button"
-                @click="moveProvider(idx, 1)"
-                :disabled="idx === localTabs.length - 1"
-                class="w-5 h-3.5 rounded grid place-items-center text-slate-400 hover:text-white hover:bg-slate-800 disabled:opacity-20 disabled:hover:bg-transparent transition cursor-pointer"
-                title="下移顺序"
-              >
-                <ChevronDown class="w-3 h-3" />
-              </button>
-            </div>
+            <span class="opacity-0 group-hover:opacity-100 text-[9px] text-black font-bold leading-none">×</span>
+          </button>
+          <div class="w-3 h-3 rounded-full bg-[#ffbd2e]" />
+          <div class="w-3 h-3 rounded-full bg-[#27c93f]" />
+        </div>
 
-            <!-- Provider Icon -->
-            <span class="w-6 h-6 rounded-lg bg-slate-800/80 grid place-items-center text-xs shrink-0 select-none">
-              {{ getProviderMeta(item.id)?.icon }}
+        <!-- 2. Brand Logo & Name -->
+        <div class="flex items-center gap-2 px-1">
+          <div class="w-6 h-6 rounded-md bg-gradient-to-br from-rose-500 to-amber-500 flex items-center justify-center text-white shadow-sm p-1">
+            <ProviderIcon name="volcengine" class="w-4 h-4" />
+          </div>
+          <span class="font-bold text-[15px] tracking-tight text-white">ArkBar</span>
+        </div>
+
+        <!-- 3. Navigation Menu Items -->
+        <nav class="space-y-1 pt-2">
+          <!-- 账号 (Accounts) -->
+          <button
+            @click="activeNavTab = 'accounts'"
+            class="w-full flex items-center justify-between px-2.5 py-2 rounded-lg text-sm font-medium transition-colors"
+            :class="activeNavTab === 'accounts' ? 'bg-white/10 text-white shadow-sm' : 'text-neutral-400 hover:text-neutral-200 hover:bg-white/5'"
+          >
+            <div class="flex items-center gap-2.5">
+              <KeyRound class="w-4 h-4 text-neutral-400" />
+              <span>账号</span>
+            </div>
+            <span class="px-1.5 py-0.5 text-[11px] font-bold rounded-full bg-white/10 text-neutral-300">
+              {{ connectedTabs.length }}
             </span>
+          </button>
 
-            <!-- Provider Info -->
-            <div class="flex-1 min-w-0">
-              <div class="flex items-center gap-1.5">
-                <p class="text-xs font-medium text-white leading-5 truncate">{{ getProviderMeta(item.id)?.title }}</p>
-                <span
-                  v-if="!item.visible"
-                  class="text-[9px] px-1.5 py-0.5 rounded bg-slate-800/90 text-slate-400 font-mono shrink-0"
-                >
-                  顶部已隐藏
-                </span>
-              </div>
-              <p class="text-[11px] text-slate-500 leading-4 mt-0.5 truncate">{{ getProviderMeta(item.id)?.sub }}</p>
-            </div>
+          <!-- 外观 (Appearance) -->
+          <button
+            @click="activeNavTab = 'appearance'"
+            class="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm font-medium transition-colors"
+            :class="activeNavTab === 'appearance' ? 'bg-white/10 text-white shadow-sm' : 'text-neutral-400 hover:text-neutral-200 hover:bg-white/5'"
+          >
+            <Palette class="w-4 h-4 text-neutral-400" />
+            <span>外观</span>
+          </button>
 
-            <!-- Visibility Eye Toggle -->
-            <button
-              type="button"
-              @click="toggleProviderVisibility(item.id)"
-              :disabled="item.visible && visibleCount <= 1"
-              class="w-7 h-7 rounded-lg grid place-items-center text-slate-400 hover:text-white hover:bg-slate-800/80 disabled:opacity-25 disabled:hover:bg-transparent transition cursor-pointer shrink-0"
-              :title="item.visible ? (visibleCount <= 1 ? '至少保留一个展示服务商' : '在顶部标签栏隐藏') : '在顶部标签栏展示'"
-            >
-              <Eye v-if="item.visible" class="w-3.5 h-3.5 text-emerald-400" />
-              <EyeOff v-else class="w-3.5 h-3.5 text-slate-500" />
-            </button>
+          <!-- 通知 (Notifications) -->
+          <button
+            @click="activeNavTab = 'notifications'"
+            class="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm font-medium transition-colors"
+            :class="activeNavTab === 'notifications' ? 'bg-white/10 text-white shadow-sm' : 'text-neutral-400 hover:text-neutral-200 hover:bg-white/5'"
+          >
+            <Bell class="w-4 h-4 text-neutral-400" />
+            <span>通知</span>
+          </button>
 
-            <!-- Status / Action (Right slot) -->
-            <div class="w-[105px] h-7 shrink-0 flex items-center justify-end">
-              <!-- Volcengine -->
-              <template v-if="item.id === 'volcengine'">
-                <span v-if="envStatus?.logged_in" class="flex items-center gap-1 text-[10px] font-mono text-slate-300 min-w-0" :title="envStatus.user_name || ''">
-                  <CheckCircle2 class="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                  <span class="truncate">{{ envStatus.user_name || '已登录' }}</span>
-                </span>
-                <button
-                  v-else
-                  type="button"
-                  @click="$emit('re-login')"
-                  class="w-full h-7 rounded-lg bg-sky-600/80 hover:bg-sky-500 text-white text-[11px] font-medium transition-colors cursor-pointer whitespace-nowrap"
-                >
-                  前往登录
-                </button>
-              </template>
-              <!-- Grok -->
-              <template v-else-if="item.id === 'grok'">
-                <span class="text-[10px] font-mono text-slate-500 text-right truncate" title="自动识别 ~/.grok/auth.json">读取 ~/.grok</span>
-              </template>
-              <!-- Antigravity -->
-              <template v-else-if="item.id === 'antigravity'">
-                <span class="text-[10px] font-mono text-slate-500 text-right truncate" title="自动集成 agy CLI">agy CLI</span>
-              </template>
-              <!-- Codex -->
-              <template v-else-if="item.id === 'codex'">
-                <span class="text-[10px] font-mono text-slate-500 text-right truncate" title="自动识别 ~/.codex/auth.json">读取 ~/.codex</span>
-              </template>
-              <template v-else-if="item.id === 'teamo'">
-                <button
-                  v-if="!hasTeamoToken"
-                  type="button"
-                  @click="showTeamoTokenSection = true"
-                  class="w-full h-7 rounded-lg bg-sky-600/80 hover:bg-sky-500 text-white text-[11px] font-medium transition-colors cursor-pointer whitespace-nowrap"
-                >
-                  配置 Key
-                </button>
-                <span v-else class="flex items-center gap-1 text-[10px] font-mono text-emerald-400">
-                  <CheckCircle2 class="w-3.5 h-3.5 shrink-0" />
-                  已配置
-                </span>
-              </template>
-            </div>
-          </div>
-        </div>
-      </section>
+          <!-- 通用 (General) -->
+          <button
+            @click="activeNavTab = 'general'"
+            class="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm font-medium transition-colors"
+            :class="activeNavTab === 'general' ? 'bg-white/10 text-white shadow-sm' : 'text-neutral-400 hover:text-neutral-200 hover:bg-white/5'"
+          >
+            <Sliders class="w-4 h-4 text-neutral-400" />
+            <span>通用</span>
+          </button>
+        </nav>
+      </div>
 
-      <section v-if="showTeamoTokenSection">
-        <div class="flex items-center justify-between px-0.5 mb-2">
-          <span class="text-[11px] font-semibold text-slate-400">TeamoRouter API Key</span>
-        </div>
-        <div class="rounded-xl border border-slate-800/60 bg-[#131a2a] p-3 space-y-2">
-          <div class="relative">
-            <input
-              v-model="teamoTokenInput"
-              :type="teamoTokenVisible ? 'text' : 'password'"
-              placeholder="sk-teamo-..."
-              autocomplete="off"
-              spellcheck="false"
-              class="h-8 w-full rounded-lg bg-slate-900/70 border border-slate-800/60 pl-2.5 pr-9 text-xs text-slate-200 placeholder:text-slate-500 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30"
-            />
-            <button
-              type="button"
-              @click="teamoTokenVisible = !teamoTokenVisible"
-              class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-200 transition-colors"
-              :title="teamoTokenVisible ? '隐藏 Key' : '显示 Key'"
-            >
-              <Eye v-if="!teamoTokenVisible" class="w-3.5 h-3.5" />
-              <EyeOff v-else class="w-3.5 h-3.5" />
-            </button>
-          </div>
-          <div class="flex items-center justify-between gap-2">
-            <span class="text-[10px] text-slate-500 truncate">{{ teamoTokenMessage || 'Key 保存在 ~/.ark-bar/tokens.json' }}</span>
-            <div class="flex items-center gap-1.5 shrink-0">
-              <button
-                type="button"
-                @click="showTeamoTokenSection = false"
-                class="h-7 px-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] transition-colors cursor-pointer"
-              >
-                取消
-              </button>
-              <button
-                type="button"
-                @click="saveTeamoToken"
-                :disabled="teamoTokenSaving"
-                class="h-7 px-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white text-[11px] font-medium transition-colors cursor-pointer"
-              >
-                {{ teamoTokenSaving ? '保存中...' : '保存' }}
-              </button>
-            </div>
-          </div>
-        </div>
-      </section>
+      <!-- Sidebar Bottom: Exit & Version -->
+      <div class="pt-4 border-t border-white/5 space-y-2 px-1">
+        <button
+          @click="handleExit"
+          class="w-full flex items-center gap-2 text-xs font-medium text-neutral-400 hover:text-rose-400 transition-colors py-1.5"
+        >
+          <Power class="w-4 h-4" />
+          <span>退出 ArkBar</span>
+        </button>
 
-      <!-- 2. Desktop Display（悬浮窗 + 托盘合并） -->
-      <section>
-        <div class="flex items-center justify-between px-0.5 mb-2">
-          <span class="text-[11px] font-semibold text-slate-400">桌面展示</span>
+        <div class="text-[11px] text-neutral-500">
+          ArkBar 0.4.0
         </div>
-        <div class="rounded-xl border border-slate-800/60 bg-[#131a2a] divide-y divide-slate-800/60 overflow-hidden">
-          <!-- Float window toggle -->
-          <div class="px-4 py-3 flex items-center gap-3">
-            <div class="flex-1 min-w-0">
-              <p class="text-xs font-medium text-white leading-5">悬浮监控框</p>
-              <p class="text-[11px] text-slate-500 leading-4 mt-0.5 truncate">常驻桌面顶层，支持拖拽</p>
-            </div>
-            <div class="w-[128px] h-7 shrink-0 flex items-center justify-end">
-              <button
-                @click="toggleFloatWindow"
-                class="w-9 h-5 rounded-full p-0.5 border transition-colors duration-200 cursor-pointer"
-                :class="isFloatOpen ? 'bg-indigo-600 border-indigo-500' : 'bg-slate-800 border-slate-700'"
-                :title="isFloatOpen ? '关闭悬浮监控框' : '开启悬浮监控框'"
-              >
-                <div
-                  class="w-3.5 h-3.5 rounded-full bg-white shadow-sm transition-transform duration-200"
-                  :class="{ 'translate-x-4': isFloatOpen }"
-                ></div>
-              </button>
-            </div>
-          </div>
-          <!-- Float primary provider -->
-          <div class="px-4 py-3 flex items-center gap-3">
-            <div class="flex-1 min-w-0">
-              <p class="text-xs font-medium text-white leading-5">悬浮框首选厂商</p>
-              <p class="text-[11px] text-slate-500 leading-4 mt-0.5 truncate">悬停悬浮框展开全部厂商</p>
-            </div>
-            <div class="w-[128px] h-7 shrink-0 flex items-center justify-end">
-              <div class="relative">
-                <select
-                  :value="floatPrimaryProvider"
-                  @change="handleFloatPrimaryChange"
-                  class="h-7 w-[128px] pl-2.5 pr-6 rounded-lg bg-slate-900/70 border border-slate-800/60 text-xs text-slate-200 truncate cursor-pointer outline-none hover:border-slate-700/60 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 appearance-none"
-                >
-                  <option value="volcengine">火山方舟</option>
-                  <option value="grok">xAI Grok</option>
-                  <option value="antigravity">Antigravity</option>
-                  <option value="codex">Codex</option>
-                  <option value="teamo">Teamo</option>
-                </select>
-                <ChevronDown class="w-3 h-3 absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
-              </div>
-            </div>
-          </div>
-          <!-- Tray target -->
-          <div class="px-4 py-3 flex items-center gap-3">
-            <div class="flex-1 min-w-0">
-              <p class="text-xs font-medium text-white leading-5">菜单栏监控目标</p>
-              <p class="text-[11px] text-slate-500 leading-4 mt-0.5 truncate">菜单栏标题显示的配额指标</p>
-            </div>
-            <div class="w-[128px] h-7 shrink-0 flex items-center justify-end">
-              <div class="relative">
-                <select
-                  :value="trayTarget"
-                  @change="handleTrayTargetChange"
-                  class="h-7 w-[128px] pl-2.5 pr-6 rounded-lg bg-slate-900/70 border border-slate-800/60 text-xs text-slate-200 truncate cursor-pointer outline-none hover:border-slate-700/60 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 appearance-none"
-                >
-                  <option value="volcengine">火山方舟</option>
-                  <option value="antigravity">Antigravity</option>
-                  <option value="grok">Grok</option>
-                  <option value="codex">Codex</option>
-                  <option value="teamo">Teamo</option>
-                  <option value="auto">跟随当前</option>
-                </select>
-                <ChevronDown class="w-3 h-3 absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
-              </div>
-            </div>
-          </div>
-          <!-- Tray icon visibility -->
-          <div class="px-4 py-3 flex items-center gap-3">
-            <div class="flex-1 min-w-0">
-              <p class="text-xs font-medium text-white leading-5">菜单栏图标</p>
-              <p class="text-[11px] text-slate-500 leading-4 mt-0.5 truncate">
-                {{ trayIconVisible ? '占用一个菜单栏图标位' : `已隐藏：按 ${trayHotkeyLabel} 或悬浮窗按钮恢复` }}
-              </p>
-            </div>
-            <div class="w-[128px] h-7 shrink-0 flex items-center justify-end">
-              <button
-                type="button"
-                @click="toggleTrayIcon"
-                :aria-pressed="trayIconVisible"
-                aria-label="显示菜单栏图标"
-                :title="trayIconVisible ? '隐藏菜单栏图标' : '显示菜单栏图标'"
-                class="w-9 h-5 rounded-full p-0.5 border transition-colors duration-200 cursor-pointer"
-                :class="trayIconVisible ? 'bg-indigo-600 border-indigo-500' : 'bg-slate-800 border-slate-700'"
-              >
-                <div
-                  class="w-3.5 h-3.5 rounded-full bg-white shadow-sm transition-transform duration-200"
-                  :class="{ 'translate-x-4': trayIconVisible }"
-                ></div>
-              </button>
-            </div>
-          </div>
-          <!-- Tray percentage mode -->
-          <div class="px-4 py-3 flex items-center gap-3">
-            <div class="flex-1 min-w-0">
-              <p class="text-xs font-medium text-white leading-5">菜单栏指示文本</p>
-              <p class="text-[11px] text-slate-500 leading-4 mt-0.5 truncate">
-                {{ trayIconVisible ? '可选择显示配额百分比或 Token 用量' : '图标已隐藏' }}
-              </p>
-            </div>
-            <div class="w-[136px] h-7 shrink-0 flex items-center justify-end">
-              <div class="relative">
-                <select
-                  :value="trayPercentMode"
-                  :disabled="!trayIconVisible"
-                  @change="$emit('update-tray-percent-mode', ($event.target as HTMLSelectElement).value as TrayPercentMode)"
-                  class="h-7 w-[130px] pl-2.5 pr-6 rounded-lg bg-slate-900/70 border border-slate-800/60 text-xs text-slate-200 truncate cursor-pointer outline-none hover:border-slate-700/60 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 appearance-none disabled:opacity-50 disabled:cursor-not-allowed"
-                  :title="trayIconVisible ? '' : '菜单栏图标已隐藏'"
-                >
-                  <option value="always">⚡ 配额百分比</option>
-                  <option value="today_tokens">🔥 今日 Token</option>
-                  <option value="session_tokens">⏱️ 5小时 Token</option>
-                  <option value="alert">⚠️ 仅告警时</option>
-                  <option value="never">纯图标 (不显示)</option>
-                </select>
-                <ChevronDown class="w-3 h-3 absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- 3. Startup Behavior -->
-      <section>
-        <div class="flex items-center justify-between px-0.5 mb-2">
-          <span class="text-[11px] font-semibold text-slate-400">启动设置</span>
-        </div>
-        <div class="rounded-xl border border-slate-800/60 bg-[#131a2a] divide-y divide-slate-800/60 overflow-hidden">
-          <div class="px-4 py-3 flex items-center gap-3">
-            <div class="flex-1 min-w-0">
-              <p class="text-xs font-medium text-white leading-5">开机自动启动</p>
-              <p class="text-[11px] text-slate-500 leading-4 mt-0.5 truncate">登录系统后自动启动 ArkBar</p>
-            </div>
-            <div class="w-[128px] h-7 shrink-0 flex items-center justify-end">
-              <button
-                type="button"
-                @click="toggleAutostart"
-                :disabled="isAutostartLoading || isAutostartUpdating || isAutostartEnabled === null"
-                :aria-pressed="isAutostartEnabled === true"
-                aria-label="开机自动启动"
-                :title="isAutostartLoading ? '正在读取状态' : isAutostartUpdating ? '正在更新开机启动设置' : '开机自动启动'"
-                class="w-9 h-5 rounded-full p-0.5 border transition-colors duration-200 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
-                :class="isAutostartEnabled ? 'bg-indigo-600 border-indigo-500' : 'bg-slate-800 border-slate-700'"
-              >
-                <RefreshCw
-                  v-if="isAutostartLoading || isAutostartUpdating"
-                  class="w-3.5 h-3.5 p-0.5 text-slate-300 animate-spin"
-                />
-                <div
-                  v-else
-                  class="w-3.5 h-3.5 rounded-full bg-white shadow-sm transition-transform duration-200"
-                  :class="{ 'translate-x-4': isAutostartEnabled === true }"
-                ></div>
-              </button>
-            </div>
-          </div>
-          <div v-if="autostartError" class="px-4 py-2.5 flex items-center justify-between gap-2 text-[11px] text-rose-400" role="alert">
-            <span class="min-w-0">{{ autostartError }}</span>
-            <button
-              type="button"
-              @click="loadAutostartStatus"
-              class="shrink-0 text-slate-300 hover:text-white underline underline-offset-2"
-            >
-              重试
-            </button>
-          </div>
-        </div>
-      </section>
-
-      <!-- 4. Data Sync -->
-      <section>
-        <div class="flex items-center justify-between px-0.5 mb-2">
-          <span class="text-[11px] font-semibold text-slate-400">数据同步</span>
-        </div>
-        <div class="rounded-xl border border-slate-800/60 bg-[#131a2a] divide-y divide-slate-800/60 overflow-hidden">
-          <div class="px-4 py-3 flex items-center gap-3">
-            <div class="flex-1 min-w-0">
-              <p class="text-xs font-medium text-white leading-5">自动刷新频率</p>
-              <p class="text-[11px] text-slate-500 leading-4 mt-0.5 truncate">后台静默同步各平台配额</p>
-            </div>
-            <div class="w-[128px] h-7 shrink-0 flex items-center justify-end">
-              <div class="relative">
-                <select
-                  :value="refreshInterval"
-                  @change="$emit('update-interval', Number(($event.target as HTMLSelectElement).value))"
-                  class="h-7 w-[104px] pl-2.5 pr-6 rounded-lg bg-slate-900/70 border border-slate-800/60 text-xs text-slate-200 truncate cursor-pointer outline-none hover:border-slate-700/60 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 appearance-none"
-                >
-                  <option :value="5">5 分钟</option>
-                  <option :value="10">10 分钟</option>
-                  <option :value="15">15 分钟</option>
-                  <option :value="30">30 分钟</option>
-                  <option :value="60">1 小时</option>
-                  <option :value="0">仅手动刷新</option>
-                </select>
-                <ChevronDown class="w-3 h-3 absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- 4. Version & Update -->
-      <section>
-        <div class="flex items-center justify-between px-0.5 mb-2">
-          <span class="text-[11px] font-semibold text-slate-400">版本与更新</span>
-        </div>
-        <div class="rounded-xl border border-slate-800/60 bg-[#131a2a] divide-y divide-slate-800/60 overflow-hidden">
-          <div class="px-4 py-3 flex items-center gap-3">
-            <div class="flex-1 min-w-0">
-              <p class="text-xs font-medium text-white leading-5">检查更新</p>
-              <p class="text-[11px] font-mono text-slate-500 leading-4 mt-0.5 truncate">GitHub · chzisnull/ark-bar</p>
-            </div>
-            <div class="w-[128px] h-7 shrink-0 flex items-center justify-end">
-              <button
-                type="button"
-                @click="handleCheckUpdate"
-                :class="[
-                  'h-7 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] text-slate-200 flex items-center gap-1 transition-colors whitespace-nowrap cursor-pointer select-none',
-                  isCheckingUpdate ? 'opacity-60 pointer-events-none' : ''
-                ]"
-              >
-                <RefreshCw class="w-3 h-3" :class="{ 'animate-spin': isCheckingUpdate }" />
-                <span>{{ isCheckingUpdate ? '检查中...' : '检查更新' }}</span>
-              </button>
-            </div>
-          </div>
-
-          <div v-if="updateResult && updateResult.has_update" class="px-4 py-3">
-            <div class="rounded-lg bg-amber-500/10 border border-amber-500/30 p-2.5 space-y-2">
-              <div class="flex items-center justify-between gap-2 text-amber-300">
-                <span class="flex items-center gap-1.5 font-bold text-xs whitespace-nowrap">
-                  <AlertCircle class="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                  发现新版本 v{{ updateResult.latest_version }}
-                </span>
-                <span class="text-[10px] font-mono text-amber-400/80 whitespace-nowrap">
-                  当前 v{{ updateResult.current_version }}
-                </span>
-              </div>
-              <p v-if="updateResult.release_notes" class="text-[11px] text-slate-300 line-clamp-2 leading-relaxed">
-                {{ updateResult.release_notes }}
-              </p>
-              <div class="pt-0.5 flex items-center justify-end gap-1.5">
-                <button
-                  @click="openReleaseUrl"
-                  class="h-7 px-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium rounded-lg text-[11px] flex items-center gap-1 transition-colors whitespace-nowrap"
-                >
-                  <ExternalLink class="w-2.5 h-2.5 text-slate-400" />
-                  网页下载
-                </button>
-                <button
-                  @click="showUpdateModal = true"
-                  class="h-7 px-2.5 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-bold rounded-lg text-[11px] flex items-center gap-1 transition shadow-sm whitespace-nowrap"
-                >
-                  <Download class="w-2.5 h-2.5" />
-                  立即在线更新
-                </button>
-              </div>
-            </div>
-          </div>
-          <div v-else-if="updateResult" class="px-4 py-2.5 flex items-center gap-1.5 text-[11px] text-emerald-400">
-            <CheckCircle2 class="w-3.5 h-3.5 shrink-0" />
-            <span>当前已是最新版本 (v{{ updateResult.current_version }})</span>
-          </div>
-
-          <div v-if="updateError" class="px-4 py-2.5 text-[11px] text-rose-400">
-            {{ updateError }}
-          </div>
-        </div>
-      </section>
-
-      <!-- 5. Quit Application -->
-      <button
-        @click="handleQuit"
-        class="mt-1 w-full h-9 rounded-xl border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-xs font-medium flex items-center justify-center gap-1.5 transition-colors"
-      >
-        <Power class="w-3.5 h-3.5" />
-        <span>退出 ArkBar</span>
-      </button>
+      </div>
     </div>
 
-    <!-- In-App Online Update Modal -->
+    <!-- ============================================================ -->
+    <!-- RIGHT CONTENT PANE (Images 2)                                -->
+    <!-- ============================================================ -->
+    <div class="flex-1 overflow-y-auto p-6 space-y-6">
+      <!-- TAB 1: 账号 (ACCOUNTS) -->
+      <div v-if="activeNavTab === 'accounts'" class="space-y-6">
+        <div>
+          <h2 class="text-xl font-bold text-white tracking-tight">账号</h2>
+          <p class="text-xs text-neutral-400 mt-1">选择刘海读取哪些服务。</p>
+        </div>
+
+        <!-- 1. 已连接 (Connected Section) -->
+        <div class="space-y-3">
+          <h3 class="text-xs font-bold text-neutral-400 uppercase tracking-wider">已连接</h3>
+
+          <!-- Provider Cards -->
+          <div class="space-y-2.5">
+            <div
+              v-for="(item, index) in localTabs.filter((t) => t.visible)"
+              :key="item.id"
+              draggable="true"
+              @dragstart="handleDragStart(index, $event)"
+              @dragover="handleDragOver"
+              @drop="handleDrop(index)"
+              class="bg-[#202126] border border-white/5 rounded-xl p-3.5 hover:border-white/10 transition-all space-y-2.5"
+            >
+              <!-- Card Header Row -->
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-2.5">
+                  <!-- Drag Handle -->
+                  <div class="cursor-grab active:cursor-grabbing text-neutral-500 hover:text-neutral-300">
+                    <GripVertical class="w-4 h-4" />
+                  </div>
+
+                  <!-- Provider Logo -->
+                  <div class="w-6 h-6 rounded-md bg-neutral-800 flex items-center justify-center p-1 text-white">
+                    <ProviderIcon :name="item.id" class="w-4 h-4" />
+                  </div>
+
+                  <!-- Title -->
+                  <span class="font-bold text-sm text-white">{{ getProviderMeta(item.id).title }}</span>
+                </div>
+
+                <!-- Right Action Controls -->
+                <div class="flex items-center gap-2.5">
+                  <button
+                    class="text-neutral-400 hover:text-white p-1 rounded transition-colors"
+                    title="推送通知"
+                  >
+                    <Bell class="w-3.5 h-3.5" />
+                  </button>
+
+                  <button
+                    @click="openExternal(getProviderMeta(item.id).url)"
+                    class="px-2.5 py-1 text-xs font-medium rounded-full bg-white/10 text-neutral-200 hover:bg-white/15 hover:text-white transition-colors"
+                  >
+                    {{ getProviderMeta(item.id).urlText }}
+                  </button>
+
+                  <!-- Apple-style Blue Switch Toggle -->
+                  <button
+                    @click="toggleProviderVisibility(item.id)"
+                    class="w-10 h-6 rounded-full transition-colors relative flex items-center px-0.5 focus:outline-none"
+                    :class="item.visible ? 'bg-[#0a84ff]' : 'bg-neutral-700'"
+                  >
+                    <span
+                      class="w-5 h-5 rounded-full bg-white shadow-md transform transition-transform"
+                      :class="item.visible ? 'translate-x-4' : 'translate-x-0'"
+                    />
+                  </button>
+                </div>
+              </div>
+
+              <!-- Card Body: Subtext & Details -->
+              <div class="pl-7 space-y-2">
+                <div class="text-xs text-neutral-400 leading-relaxed">
+                  <span class="text-neutral-300">{{ getProviderMeta(item.id).sub }}</span>
+                  <p class="text-[11px] text-neutral-500 mt-0.5">{{ getProviderMeta(item.id).hint }}</p>
+                </div>
+
+                <!-- Dropdown Selectors Row -->
+                <div class="flex items-center gap-4 text-xs pt-1">
+                  <!-- 刘海显示 Metric Dropdown -->
+                  <div class="flex items-center gap-1.5">
+                    <span class="text-neutral-400">刘海显示</span>
+                    <select
+                      :value="item.notch_metric || 'session'"
+                      @change="updateProviderNotchMetric(item.id, ($event.target as HTMLSelectElement).value as NotchMetric)"
+                      class="bg-[#18191c] text-[#0a84ff] hover:text-blue-400 font-medium px-2 py-1 rounded border border-white/5 focus:outline-none cursor-pointer text-xs"
+                    >
+                      <option value="session">5 小时额度</option>
+                      <option value="weekly">周度额度</option>
+                      <option value="monthly">月度额度</option>
+                      <option value="today_tokens">今日 Token</option>
+                      <option value="balance" v-if="item.id === 'teamo'">账户余额</option>
+                    </select>
+                  </div>
+
+                  <!-- 模型数据 Dropdown -->
+                  <div class="flex items-center gap-1.5">
+                    <span class="text-neutral-400">模型数据</span>
+                    <select
+                      :value="item.model_filter || 'all'"
+                      @change="updateProviderModelFilter(item.id, ($event.target as HTMLSelectElement).value)"
+                      class="bg-[#18191c] text-[#0a84ff] hover:text-blue-400 font-medium px-2 py-1 rounded border border-white/5 focus:outline-none cursor-pointer text-xs"
+                    >
+                      <option value="all">全部模型</option>
+                      <option value="gemini" v-if="item.id === 'antigravity'">Gemini 模型</option>
+                      <option value="claude" v-if="item.id === 'antigravity'">Claude 模型</option>
+                    </select>
+                  </div>
+                </div>
+
+                <!-- Special Token Input for Teamo -->
+                <div v-if="item.id === 'teamo'" class="pt-2">
+                  <button
+                    @click="showTeamoKeyInput = !showTeamoKeyInput"
+                    class="text-[11px] text-neutral-400 hover:text-neutral-200 underline decoration-dotted"
+                  >
+                    {{ showTeamoKeyInput ? '收起 API Key 配置' : '修改 / 填入 Teamo API Key' }}
+                  </button>
+
+                  <div v-if="showTeamoKeyInput" class="mt-2 flex items-center gap-2">
+                    <input
+                      v-model="teamoKey"
+                      type="password"
+                      placeholder="sk-teamo-..."
+                      class="bg-[#18191c] text-xs text-white px-2.5 py-1.5 rounded-lg border border-white/10 flex-1 focus:outline-none focus:border-blue-500 font-mono"
+                    />
+                    <button
+                      @click="saveTeamoKey"
+                      class="px-3 py-1.5 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-colors"
+                    >
+                      {{ teamoKeySaved ? '已保存 ✓' : '保存' }}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <p class="text-[11px] text-neutral-500 pt-1">刘海按这个顺序画。拖动一行的手柄即可改顺序。</p>
+
+          <!-- Explanatory note callout card (Images 2) -->
+          <div class="bg-white/[0.03] border border-white/5 rounded-xl p-3 text-xs text-neutral-400 leading-relaxed space-y-1">
+            <p class="text-neutral-300 font-medium">大多数读数借助本地已持有的工具自动同步。</p>
+            <p class="text-neutral-500 text-[11px]">
+              例如 Antigravity 通过本地 agy CLI，火山方舟通过 ArkCLI，Grok/Codex 自动读取本地会话。TeamoRouter 支持通过 API Key 直连查询，凭据仅保存在本地 ~/.ark-bar/tokens.json。
+            </p>
+          </div>
+        </div>
+
+        <!-- 2. 未连接 (Not Connected Section) -->
+        <div class="space-y-3 pt-4 border-t border-white/5">
+          <h3 class="text-xs font-bold text-neutral-400 uppercase tracking-wider">未连接</h3>
+
+          <div class="space-y-2">
+            <div
+              v-for="service in inactiveServices"
+              :key="service.id"
+              class="bg-[#202126]/60 border border-white/5 rounded-xl p-3 flex items-center justify-between opacity-70 hover:opacity-100 transition-opacity"
+            >
+              <div class="flex items-center gap-3">
+                <div class="w-6 h-6 rounded-md bg-neutral-800 flex items-center justify-center p-1 text-neutral-400">
+                  <ProviderIcon :name="service.icon" class="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 class="text-sm font-semibold text-neutral-200">{{ service.name }}</h4>
+                  <p class="text-[11px] text-neutral-500">{{ service.desc }}</p>
+                </div>
+              </div>
+
+              <button
+                @click="service.enabled = !service.enabled"
+                class="w-10 h-6 rounded-full bg-neutral-700 relative flex items-center px-0.5 focus:outline-none cursor-not-allowed opacity-50"
+                title="服务即将支持"
+              >
+                <span class="w-5 h-5 rounded-full bg-white shadow-md transform translate-x-0" />
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 2: 外观 (APPEARANCE) -->
+      <div v-else-if="activeNavTab === 'appearance'" class="space-y-6">
+        <div>
+          <h2 class="text-xl font-bold text-white tracking-tight">外观</h2>
+          <p class="text-xs text-neutral-400 mt-1">自定义屏幕刘海与贴边交互。</p>
+        </div>
+
+        <div class="space-y-4">
+          <!-- 刘海位置 -->
+          <div class="bg-[#202126] border border-white/5 rounded-xl p-4 space-y-3">
+            <h3 class="text-sm font-semibold text-white">刘海屏幕贴靠位置</h3>
+            <div class="grid grid-cols-3 gap-3">
+              <button
+                @click="setNotchPosition('right')"
+                class="p-3 rounded-lg border text-center transition-all"
+                :class="notchPosition === 'right' ? 'border-[#0a84ff] bg-[#0a84ff]/10 text-white' : 'border-white/5 bg-white/5 text-neutral-400 hover:text-white'"
+              >
+                <div class="text-sm font-bold">右侧贴边</div>
+                <div class="text-[11px] text-neutral-400 mt-0.5">默认（推荐）</div>
+              </button>
+
+              <button
+                @click="setNotchPosition('left')"
+                class="p-3 rounded-lg border text-center transition-all"
+                :class="notchPosition === 'left' ? 'border-[#0a84ff] bg-[#0a84ff]/10 text-white' : 'border-white/5 bg-white/5 text-neutral-400 hover:text-white'"
+              >
+                <div class="text-sm font-bold">左侧贴边</div>
+                <div class="text-[11px] text-neutral-400 mt-0.5">适合副屏使用</div>
+              </button>
+
+              <button
+                @click="setNotchPosition('hidden')"
+                class="p-3 rounded-lg border text-center transition-all"
+                :class="notchPosition === 'hidden' ? 'border-[#0a84ff] bg-[#0a84ff]/10 text-white' : 'border-white/5 bg-white/5 text-neutral-400 hover:text-white'"
+              >
+                <div class="text-sm font-bold">隐藏刘海</div>
+                <div class="text-[11px] text-neutral-400 mt-0.5">仅保留菜单栏托盘</div>
+              </button>
+            </div>
+          </div>
+
+          <!-- 自动贴边隐藏 -->
+          <div class="bg-[#202126] border border-white/5 rounded-xl p-4 flex items-center justify-between">
+            <div>
+              <h3 class="text-sm font-semibold text-white">闲置时自动半隐</h3>
+              <p class="text-xs text-neutral-400 mt-0.5">无鼠标悬停时自动降低透明度，避免遮挡代码编辑器</p>
+            </div>
+
+            <button
+              @click="toggleAutoHide"
+              class="w-10 h-6 rounded-full transition-colors relative flex items-center px-0.5"
+              :class="autoHide ? 'bg-[#0a84ff]' : 'bg-neutral-700'"
+            >
+              <span
+                class="w-5 h-5 rounded-full bg-white shadow-md transform transition-transform"
+                :class="autoHide ? 'translate-x-4' : 'translate-x-0'"
+              />
+            </button>
+          </div>
+
+          <!-- 桌面悬浮刘海窗口控制 -->
+          <div class="bg-[#202126] border border-white/5 rounded-xl p-4 flex items-center justify-between">
+            <div>
+              <h3 class="text-sm font-semibold text-white">屏幕刘海快捷开关</h3>
+              <p class="text-xs text-neutral-400 mt-0.5">立即召唤或隐藏桌面上的 Codenotch 灵动贴边刘海</p>
+            </div>
+
+            <button
+              @click="toggleNotchWindow"
+              class="px-3 py-1.5 text-xs font-semibold rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors"
+            >
+              切换显示 / 隐藏
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 3: 通知 (NOTIFICATIONS) -->
+      <div v-else-if="activeNavTab === 'notifications'" class="space-y-6">
+        <div>
+          <h2 class="text-xl font-bold text-white tracking-tight">通知</h2>
+          <p class="text-xs text-neutral-400 mt-1">配额使用预警与重置推送提醒。</p>
+        </div>
+
+        <div class="space-y-4">
+          <div class="bg-[#202126] border border-white/5 rounded-xl p-4 flex items-center justify-between">
+            <div>
+              <h3 class="text-sm font-semibold text-white">高配额消耗告警 (≥85%)</h3>
+              <p class="text-xs text-neutral-400 mt-0.5">当任一模型平台配额达到 85% 警戒水位时发送桌面通知</p>
+            </div>
+            <button
+              @click="alertHighQuota = !alertHighQuota"
+              class="w-10 h-6 rounded-full transition-colors relative flex items-center px-0.5"
+              :class="alertHighQuota ? 'bg-[#0a84ff]' : 'bg-neutral-700'"
+            >
+              <span class="w-5 h-5 rounded-full bg-white shadow-md transform transition-transform" :class="alertHighQuota ? 'translate-x-4' : 'translate-x-0'" />
+            </button>
+          </div>
+
+          <div class="bg-[#202126] border border-white/5 rounded-xl p-4 flex items-center justify-between">
+            <div>
+              <h3 class="text-sm font-semibold text-white">额度重置提醒</h3>
+              <p class="text-xs text-neutral-400 mt-0.5">5小时窗口或周度额度重置时自动推送通知</p>
+            </div>
+            <button
+              @click="alertReset = !alertReset"
+              class="w-10 h-6 rounded-full transition-colors relative flex items-center px-0.5"
+              :class="alertReset ? 'bg-[#0a84ff]' : 'bg-neutral-700'"
+            >
+              <span class="w-5 h-5 rounded-full bg-white shadow-md transform transition-transform" :class="alertReset ? 'translate-x-4' : 'translate-x-0'" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 4: 通用 (GENERAL) -->
+      <div v-else-if="activeNavTab === 'general'" class="space-y-6">
+        <div>
+          <h2 class="text-xl font-bold text-white tracking-tight">通用</h2>
+          <p class="text-xs text-neutral-400 mt-1">系统设置与自动更新维护。</p>
+        </div>
+
+        <div class="space-y-4">
+          <!-- 开机自启动 -->
+          <div class="bg-[#202126] border border-white/5 rounded-xl p-4 flex items-center justify-between">
+            <div>
+              <h3 class="text-sm font-semibold text-white">开机自动启动</h3>
+              <p class="text-xs text-neutral-400 mt-0.5">登录系统时自动在后台唤起 ArkBar 菜单栏与屏幕刘海</p>
+            </div>
+            <button
+              @click="toggleAutostart"
+              class="w-10 h-6 rounded-full transition-colors relative flex items-center px-0.5"
+              :class="autostartEnabled ? 'bg-[#0a84ff]' : 'bg-neutral-700'"
+            >
+              <span class="w-5 h-5 rounded-full bg-white shadow-md transform transition-transform" :class="autostartEnabled ? 'translate-x-4' : 'translate-x-0'" />
+            </button>
+          </div>
+
+          <!-- 后台刷新频率 -->
+          <div class="bg-[#202126] border border-white/5 rounded-xl p-4 flex items-center justify-between">
+            <div>
+              <h3 class="text-sm font-semibold text-white">后台同步频率</h3>
+              <p class="text-xs text-neutral-400 mt-0.5">原生 Rust 后台轮询间隔（毫秒级低功耗）</p>
+            </div>
+            <select
+              :value="props.refreshInterval"
+              @change="emit('update-interval', Number(($event.target as HTMLSelectElement).value))"
+              class="bg-[#18191c] text-white text-xs font-semibold px-3 py-1.5 rounded-lg border border-white/10 focus:outline-none"
+            >
+              <option :value="1">每 1 分钟</option>
+              <option :value="3">每 3 分钟</option>
+              <option :value="5">每 5 分钟（默认）</option>
+              <option :value="10">每 10 分钟</option>
+              <option :value="0">仅手动刷新</option>
+            </select>
+          </div>
+
+          <!-- 菜单栏托盘模式 -->
+          <div class="bg-[#202126] border border-white/5 rounded-xl p-4 flex items-center justify-between">
+            <div>
+              <h3 class="text-sm font-semibold text-white">macOS 菜单栏图标显示</h3>
+              <p class="text-xs text-neutral-400 mt-0.5">控制顶部状态栏文字信息</p>
+            </div>
+            <select
+              :value="props.trayPercentMode"
+              @change="emit('update-tray-percent-mode', ($event.target as HTMLSelectElement).value as TrayPercentMode)"
+              class="bg-[#18191c] text-white text-xs font-semibold px-3 py-1.5 rounded-lg border border-white/10 focus:outline-none"
+            >
+              <option value="always">始终显示配额百分比</option>
+              <option value="today_tokens">显示今日 Token (如 🔥 602K)</option>
+              <option value="alert">仅告警时显示</option>
+              <option value="never">纯图标模式</option>
+            </select>
+          </div>
+
+          <!-- 全局快捷键 -->
+          <div class="bg-[#202126] border border-white/5 rounded-xl p-4 flex items-center justify-between">
+            <div>
+              <h3 class="text-sm font-semibold text-white">全局呼出快捷键</h3>
+              <p class="text-xs text-neutral-400 mt-0.5">随时随地快速唤出或收起面板</p>
+            </div>
+            <kbd class="px-2.5 py-1 text-xs font-mono font-semibold rounded bg-white/10 text-neutral-200 border border-white/10 shadow-inner">
+              ⌘ Shift A
+            </kbd>
+          </div>
+
+          <!-- 检查更新 -->
+          <div class="bg-[#202126] border border-white/5 rounded-xl p-4 flex items-center justify-between">
+            <div>
+              <h3 class="text-sm font-semibold text-white">检查新版本</h3>
+              <p class="text-xs text-neutral-400 mt-0.5">当前版本: v0.4.0</p>
+            </div>
+            <button
+              @click="checkForUpdate"
+              :disabled="isCheckingUpdate"
+              class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors"
+            >
+              <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': isCheckingUpdate }" />
+              <span>{{ isCheckingUpdate ? '检测中...' : '在线检查更新' }}</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Update Modal -->
     <UpdateModal
-      v-if="showUpdateModal && updateResult"
-      :update-info="updateResult"
+      v-if="showUpdateModal && currentUpdateInfo"
+      :update-info="currentUpdateInfo"
       @close="showUpdateModal = false"
     />
   </div>

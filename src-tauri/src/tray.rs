@@ -39,7 +39,7 @@ fn reveal_float_window(window: &WebviewWindow) {
     // Only snap to the default corner the first time. After the user drags
     // the widget, keep that position across hide/show and size changes.
     if !FLOAT_PLACED.swap(true, Ordering::SeqCst) {
-        let _ = window.move_window(Position::TopRight);
+        let _ = window.move_window(Position::RightCenter);
     }
     let _ = window.show();
     let _ = window.set_focus();
@@ -55,7 +55,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let tray_image = Image::from_bytes(icon_bytes)?;
 
     let show_i = MenuItem::with_id(app, "show", "打开 ArkBar", true, None::<&str>)?;
-    let float_i = MenuItem::with_id(app, "toggle_float", "切换桌面悬浮窗", true, None::<&str>)?;
+    let float_i = MenuItem::with_id(app, "toggle_float", "切换屏幕刘海 (Notch)", true, None::<&str>)?;
     let quit_i = MenuItem::with_id(app, "quit", "退出 ArkBar", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show_i, &float_i, &quit_i])?;
     // 弹出用副本：菜单不再常驻挂载到状态栏项（见下），由事件闭包持有
@@ -276,4 +276,13 @@ pub fn set_float_window_size(app: AppHandle, width: f64, height: f64) -> Result<
     }
     Ok(())
 }
+
+#[tauri::command]
+pub fn set_main_window_size(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_size(tauri::LogicalSize::new(width, height));
+    }
+    Ok(())
+}
+
 

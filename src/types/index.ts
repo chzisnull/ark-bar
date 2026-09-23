@@ -68,10 +68,18 @@ export interface UpdateProgress {
 
 export type ProviderType = 'volcengine' | 'antigravity' | 'grok' | 'codex' | 'teamo';
 
+export type NotchPosition = 'right' | 'left' | 'top' | 'hidden';
+export type NotchMetric = 'session' | 'weekly' | 'monthly' | 'today_tokens' | 'balance';
+export type NotchScale = 'compact' | 'normal' | 'large';
+export type SettingsNavTab = 'accounts' | 'appearance' | 'notifications' | 'general';
+
 export interface ProviderTabConfig {
   id: ProviderType;
   name: string;
   visible: boolean;
+  notch_metric?: NotchMetric;
+  model_filter?: string;
+  notification_enabled?: boolean;
 }
 
 /** 菜单栏显示模式：始终显示配额百分比 / 仅告警(≥75%或断连) / 纯图标 / 今日 Token / 近5小时 Token */

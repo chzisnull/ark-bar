@@ -24,3 +24,7 @@ target/
 *.njsproj
 *.sln
 *.sw?
+
+# Local tools & scratch
+.playwright-mcp/
+pelican-bike.html

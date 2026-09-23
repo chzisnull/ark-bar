@@ -2,21 +2,39 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
-import type { ProviderType, ProviderUsageData } from '../types';
-import { X, RefreshCw, PanelTop } from 'lucide-vue-next';
+import type { ProviderType, ProviderUsageData, NotchPosition, NotchMetric } from '../types';
+import ProviderIcon from './ProviderIcon.vue';
+import { Settings, GripVertical } from 'lucide-vue-next';
 
 const CACHE_KEY = 'arkbar_cached_providers_data';
 
-const allProvidersList: { id: ProviderType; name: string; icon: string }[] = [
-  { id: 'volcengine', name: '火山方舟', icon: '🌋' },
-  { id: 'grok', name: 'xAI Grok', icon: '⚡' },
-  { id: 'antigravity', name: 'Antigravity', icon: '🌐' },
-  { id: 'codex', name: 'Codex', icon: '🤖' },
-  { id: 'teamo', name: 'Teamo', icon: '🛰️' },
+interface ProviderTabItem {
+  id: ProviderType;
+  name: string;
+  visible: boolean;
+  notch_metric?: NotchMetric;
+}
+
+const DEFAULT_TABS: ProviderTabItem[] = [
+  { id: 'antigravity', name: 'Antigravity', visible: true, notch_metric: 'session' },
+  { id: 'grok', name: 'Grok', visible: true, notch_metric: 'session' },
+  { id: 'volcengine', name: '火山方舟', visible: true, notch_metric: 'weekly' },
+  { id: 'codex', name: 'Codex', visible: true, notch_metric: 'session' },
+  { id: 'teamo', name: 'Teamo', visible: true, notch_metric: 'balance' },
 ];
 
-function loadAllCachedData(): Record<ProviderType, ProviderUsageData | null> {
+function loadProviderTabs(): ProviderTabItem[] {
+  try {
+    const raw = localStorage.getItem('arkbar_provider_tabs');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
+  } catch {}
+  return DEFAULT_TABS;
+}
+
+function loadCachedData(): Record<ProviderType, ProviderUsageData | null> {
   const defaults: Record<ProviderType, ProviderUsageData | null> = {
     volcengine: null,
     antigravity: null,
@@ -33,563 +51,491 @@ function loadAllCachedData(): Record<ProviderType, ProviderUsageData | null> {
   return defaults;
 }
 
-const allCachedData = ref<Record<ProviderType, ProviderUsageData | null>>(loadAllCachedData());
-
-// Primary default provider (configurable in settings)
-const primaryProvider = ref<ProviderType>(
-  (localStorage.getItem('arkbar_float_primary_provider') as ProviderType) ||
-  (localStorage.getItem('arkbar_float_provider') as ProviderType) ||
-  'volcengine'
+const allCachedData = ref<Record<ProviderType, ProviderUsageData | null>>(loadCachedData());
+const providerTabs = ref<ProviderTabItem[]>(loadProviderTabs());
+const notchPosition = ref<NotchPosition>(
+  (localStorage.getItem('arkbar_notch_position') as NotchPosition) || 'right'
 );
+const autoHide = ref<boolean>(localStorage.getItem('arkbar_notch_auto_hide') === 'true');
 
-const isRefreshing = ref(false);
-// 菜单栏图标被隐藏时显示一键恢复按钮（存储变更经 storage 事件跨窗口同步）
-const trayIconHidden = ref(localStorage.getItem('arkbar_tray_icon_visible') === 'false');
-const isHovered = ref(false);
-const showQuickMenu = ref(false);
-let quickMenuTimer: any = null;
-let hoverTimer: any = null;
+// Hover & Popover management
+const activeHoverId = ref<ProviderType | null>(null);
+const activeHoverIndex = ref<number>(0);
+const isHoveringNotch = ref<boolean>(false);
+const isHoveringPopover = ref<boolean>(false);
+let closeTimer: any = null;
 
-// Filter all authorized providers (is_connected === true)
-const authorizedProviders = computed(() => {
-  const list: { id: ProviderType; name: string; icon: string; data: ProviderUsageData }[] = [];
-
-  // 1. Primary provider comes first
-  const primaryMeta = allProvidersList.find((p) => p.id === primaryProvider.value)!;
-  const primaryData = allCachedData.value[primaryProvider.value];
-  if (primaryData?.is_connected) {
-    list.push({ ...primaryMeta, data: primaryData });
-  }
-
-  // 2. Add remaining authorized providers
-  for (const p of allProvidersList) {
-    if (p.id !== primaryProvider.value) {
-      const data = allCachedData.value[p.id];
-      if (data?.is_connected) {
-        list.push({ ...p, data });
-      }
-    }
-  }
-
-  // If none is marked connected, fallback to primary default
-  if (list.length === 0) {
-    const fallbackData = primaryData || ({
-      provider: primaryProvider.value,
-      provider_name: primaryMeta.name,
-      icon: primaryMeta.icon,
-      is_connected: false,
-      groups: [],
-    } as ProviderUsageData);
-    list.push({ ...primaryMeta, data: fallbackData });
-  }
-
-  return list;
-});
-
-const currentUsage = computed(() => {
-  return allCachedData.value[primaryProvider.value];
-});
-
-const currentPercent = computed(() => {
-  if (currentUsage.value?.primary_session_percent != null) {
-    return Math.round(currentUsage.value.primary_session_percent);
-  }
-  return null;
-});
-
-function getBarColor(percent: number | null): string {
-  const p = percent ?? 0;
-  if (p >= 90) return 'from-rose-500 to-red-600';
-  if (p >= 75) return 'from-amber-500 to-orange-500';
-  return 'from-indigo-500 to-blue-500';
-}
-
-function formatTokensShort(tokens: number): string {
-  if (tokens >= 1_000_000_000) return `${(tokens / 1_000_000_000).toFixed(1)}B`;
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
-  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(0)}K`;
-  return String(tokens);
-}
-
-function getTextColor(percent: number | null): string {
-  const p = percent ?? 0;
-  if (p >= 90) return 'text-rose-400';
-  if (p >= 75) return 'text-amber-400';
-  return 'text-white';
-}
-
-function parseResetTime(dateStr?: string): number | null {
-  if (!dateStr) return null;
-  const trimmed = dateStr.trim();
-  if (/^\d+$/.test(trimmed)) {
-    const num = parseInt(trimmed, 10);
-    return num < 1e11 ? num * 1000 : num;
-  }
-  const t = new Date(trimmed).getTime();
-  return isNaN(t) ? null : t;
-}
-
-function formatExactTime(dateStr?: string): string {
-  const target = parseResetTime(dateStr);
-  if (!target) return dateStr || '';
-  const d = new Date(target);
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const date = String(d.getDate()).padStart(2, '0');
-  const hours = String(d.getHours()).padStart(2, '0');
-  const mins = String(d.getMinutes()).padStart(2, '0');
-  return `${year}-${month}-${date} ${hours}:${mins}`;
-}
-
-function formatMiniReset(dateStr?: string): string {
-  const target = parseResetTime(dateStr);
-  if (!target) return '';
-  try {
-    const diff = target - Date.now();
-    if (diff <= 0) return '即重置';
-    const hours = Math.floor(diff / (1000 * 60 * 60));
-    const mins = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-    if (hours > 24) {
-      const days = Math.floor(hours / 24);
-      return `${days}d后`;
-    }
-    if (hours > 0) return `${hours}h${mins}m`;
-    return `${mins}m`;
-  } catch {
-    return '';
-  }
-}
-
-async function fetchUsage() {
-  isRefreshing.value = true;
-  try {
-    const data = await invoke<ProviderUsageData>('get_unified_usage', {
-      provider: primaryProvider.value,
-      customToken: null,
-      force: true,
+// Visible active providers to display in the Notch
+const notchProviders = computed(() => {
+  return providerTabs.value
+    .filter((t) => t.visible)
+    .map((tab) => {
+      const data = allCachedData.value[tab.id];
+      return {
+        id: tab.id,
+        name: tab.name,
+        notch_metric: tab.notch_metric || 'session',
+        data,
+      };
     });
-    allCachedData.value[primaryProvider.value] = data;
-    try {
-      localStorage.setItem(CACHE_KEY, JSON.stringify(allCachedData.value));
-    } catch {}
-  } catch (err) {
-    console.error('Floating widget fetch failed:', err);
-  } finally {
-    isRefreshing.value = false;
-  }
-}
+});
 
-async function fetchAllUsage() {
-  for (const p of allProvidersList) {
-    try {
-      const data = await invoke<ProviderUsageData>('get_unified_usage', {
-        provider: p.id,
-        customToken: null,
-      });
-      allCachedData.value[p.id] = data;
-    } catch {}
-  }
-  try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify(allCachedData.value));
-  } catch {}
-}
+// Currently active popover data
+const activeHoverData = computed<ProviderUsageData | null>(() => {
+  if (!activeHoverId.value) return null;
+  return allCachedData.value[activeHoverId.value] || null;
+});
 
-function setPrimary(provider: ProviderType) {
-  primaryProvider.value = provider;
-  localStorage.setItem('arkbar_float_primary_provider', provider);
-  localStorage.setItem('arkbar_float_provider', provider);
-  fetchUsage();
-}
+// Compute the representative display percentage for each provider ring
+function getProviderDisplayPercent(id: ProviderType, metric?: NotchMetric): number {
+  const data = allCachedData.value[id];
+  if (!data) return 0;
 
-function cycleProvider() {
-  const ids = allProvidersList.map((p) => p.id);
-  const curIdx = ids.indexOf(primaryProvider.value);
-  const nextIdx = (curIdx + 1) % ids.length;
-  setPrimary(ids[nextIdx]);
-}
-
-async function closeWidget() {
-  await invoke('close_float_window');
-}
-
-// Native OS drag (data-tauri-drag-region) takes over the mouse session.
-// Freeze hover resize while a drag is in progress so the window doesn't
-// jump or swallow the gesture when its size changes under the cursor.
-let isDragging = false;
-
-function freezeHoverForDrag() {
-  isDragging = true;
-  if (hoverTimer) clearTimeout(hoverTimer);
-  getCurrentWebviewWindow().startDragging().catch((err) => {
-    console.error('startDragging failed:', err);
-  });
-}
-
-function releaseHoverFreeze() {
-  isDragging = false;
-}
-
-function handleMouseEnter() {
-  if (isDragging || showQuickMenu.value) return;
-  if (hoverTimer) clearTimeout(hoverTimer);
-
-  hoverTimer = setTimeout(async () => {
-    if (isDragging || showQuickMenu.value) return;
-    const count = authorizedProviders.value.length;
-    if (count > 1) {
-      isHovered.value = true;
-      const targetHeight = Math.min(200, 32 + count * 36);
-      try {
-        await invoke('set_float_window_size', { width: 260.0, height: Number(targetHeight) });
-      } catch {}
+  // Custom metric handling
+  if (metric === 'weekly') {
+    for (const g of data.groups || []) {
+      const p = g.periods.find((x) => x.label.toLowerCase().includes('week'));
+      if (p) return Math.round(p.used_percent);
     }
-  }, 120);
+  } else if (metric === 'monthly') {
+    for (const g of data.groups || []) {
+      const p = g.periods.find((x) => x.label.toLowerCase().includes('month'));
+      if (p) return Math.round(p.used_percent);
+    }
+  } else if (metric === 'balance' && data.extension?.balance) {
+    // For balance, if we have balance amount, return percentage of max or cap
+    const bal = data.extension.balance.value;
+    return Math.min(100, Math.max(0, Math.round(bal)));
+  }
+
+  // Fallback to primary session or first valid period
+  if (data.primary_session_percent != null) {
+    return Math.round(data.primary_session_percent);
+  }
+
+  for (const g of data.groups || []) {
+    if (g.periods.length > 0) {
+      return Math.round(g.periods[0].used_percent);
+    }
+  }
+
+  return 0;
 }
 
-function handleMouseLeave() {
-  if (hoverTimer) clearTimeout(hoverTimer);
-  if (isDragging || !isHovered.value) return;
+// Compute badge text shown under the ring
+function getProviderBadgeText(id: ProviderType, metric?: NotchMetric): string {
+  const data = allCachedData.value[id];
+  if (!data || !data.is_connected) return '--';
 
-  hoverTimer = setTimeout(async () => {
-    if (isDragging) return;
-    isHovered.value = false;
-    try {
-      await invoke('set_float_window_size', { width: 260.0, height: 44.0 });
-    } catch {}
+  if (id === 'teamo' && data.extension?.balance?.value != null) {
+    const val = data.extension.balance.value;
+    return val >= 100 ? `$${Math.round(val)}` : `$${val.toFixed(1)}`;
+  }
+
+  const p = getProviderDisplayPercent(id, metric);
+  return `${p}%`;
+}
+
+// Circular ring stroke color based on percentage
+function getRingStrokeColor(percent: number): string {
+  if (percent >= 85) return '#f43f5e'; // Rose / red alert
+  if (percent >= 60) return '#eab308'; // Amber / Gold (matching Codenotch screenshots)
+  return '#38bdf8'; // Sky blue / Emerald safe
+}
+
+// Circular ring SVG dash calculation (radius = 18, circumference = 2 * PI * 18 = 113.097)
+const CIRCUMFERENCE = 113.1;
+function getRingDashOffset(percent: number): number {
+  const clamped = Math.max(0, Math.min(100, percent));
+  return CIRCUMFERENCE - (clamped / 100) * CIRCUMFERENCE;
+}
+
+// Formatting reset time helper
+function formatResetLabel(resetAt?: string): string {
+  if (!resetAt) return '';
+  const trimmed = resetAt.trim();
+
+  // If timestamp
+  let date: Date | null = null;
+  if (/^\d+$/.test(trimmed)) {
+    const n = parseInt(trimmed, 10);
+    date = new Date(n < 1e11 ? n * 1000 : n);
+  } else {
+    const parsed = new Date(trimmed);
+    if (!isNaN(parsed.getTime())) date = parsed;
+  }
+
+  if (!date) return `${trimmed} 重置`;
+
+  const now = new Date();
+  const days = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+  const dayName = days[date.getDay()];
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+
+  // If within this week
+  const diffDays = Math.floor((date.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+  if (diffDays < 7) {
+    return `${dayName} ${hh}:${mm} 重置`;
+  }
+  return `${date.getMonth() + 1}月${date.getDate()}日 重置`;
+}
+
+// Hover interaction triggers
+function handleProviderMouseEnter(id: ProviderType, index: number) {
+  if (closeTimer) {
+    clearTimeout(closeTimer);
+    closeTimer = null;
+  }
+  isHoveringNotch.value = true;
+  activeHoverId.value = id;
+  activeHoverIndex.value = index;
+}
+
+function handleProviderMouseLeave() {
+  closeTimer = setTimeout(() => {
+    if (!isHoveringPopover.value) {
+      activeHoverId.value = null;
+    }
+  }, 180);
+}
+
+function handlePopoverMouseEnter() {
+  if (closeTimer) {
+    clearTimeout(closeTimer);
+    closeTimer = null;
+  }
+  isHoveringPopover.value = true;
+}
+
+function handlePopoverMouseLeave() {
+  closeTimer = setTimeout(() => {
+    isHoveringPopover.value = false;
+    activeHoverId.value = null;
   }, 150);
 }
 
-function handleContextMenu(e: MouseEvent) {
-  e.preventDefault();
-  if (isHovered.value) {
-    isHovered.value = false;
-    invoke('set_float_window_size', { width: 260.0, height: 44.0 }).catch(() => {});
-  }
-  showQuickMenu.value = !showQuickMenu.value;
-  if (showQuickMenu.value) {
-    if (quickMenuTimer) clearTimeout(quickMenuTimer);
-    quickMenuTimer = setTimeout(() => {
-      showQuickMenu.value = false;
-    }, 6000);
-  }
+// Dragging window along screen edge
+let isDragging = false;
+let dragStartX = 0;
+let dragStartY = 0;
+
+function handleDragMouseDown(e: MouseEvent) {
+  isDragging = true;
+  dragStartX = e.screenX;
+  dragStartY = e.screenY;
+  invoke('start_drag_move').catch(() => {});
+
+  const onMouseMove = (ev: MouseEvent) => {
+    if (!isDragging) return;
+    const dx = ev.screenX - dragStartX;
+    const dy = ev.screenY - dragStartY;
+    invoke('update_drag_move', { totalDx: dx, totalDy: dy }).catch(() => {});
+  };
+
+  const onMouseUp = () => {
+    isDragging = false;
+    invoke('end_drag_move').catch(() => {});
+    window.removeEventListener('mousemove', onMouseMove);
+    window.removeEventListener('mouseup', onMouseUp);
+  };
+
+  window.addEventListener('mousemove', onMouseMove);
+  window.addEventListener('mouseup', onMouseUp);
 }
 
-async function openMain() {
-  showQuickMenu.value = false;
-  try {
-    await invoke('show_main_window');
-  } catch (err) {
-    console.error('Failed to show main window:', err);
-  }
+// Open settings window / popover
+function openSettings() {
+  invoke('show_main_window').catch(() => {});
 }
 
-async function handleExitApp() {
-  try {
-    await invoke('exit_app');
-  } catch (err) {
-    console.error('Failed to exit app:', err);
-  }
-}
-
-async function restoreTrayIcon() {
-  trayIconHidden.value = false;
-  localStorage.setItem('arkbar_tray_icon_visible', 'true');
-  try {
-    await invoke('set_tray_icon_visible', { visible: true });
-  } catch {
-    trayIconHidden.value = true;
-    localStorage.setItem('arkbar_tray_icon_visible', 'false');
-  }
-}
-
-// Storage event to sync primary provider changes from settings
-function handleStorageChange(e: StorageEvent) {
-  if (e.key === 'arkbar_float_primary_provider' && e.newValue) {
-    primaryProvider.value = e.newValue as ProviderType;
-    fetchUsage();
-  }
-  if (e.key === CACHE_KEY && e.newValue) {
-    try {
-      allCachedData.value = JSON.parse(e.newValue);
-    } catch {}
-  }
-  if (e.key === 'arkbar_tray_icon_visible') {
-    trayIconHidden.value = e.newValue === 'false';
-  }
-}
-
-// Rust 后台线程每轮刷新后逐厂商广播；悬浮窗自身的 setInterval 在窗口隐藏
-// 时同样会被系统挂起，所以数据更新以这里的事件为主。
-function handleUsageUpdated(data: ProviderUsageData) {
-  if (!data || !(data.provider in allCachedData.value)) return;
-  allCachedData.value[data.provider as ProviderType] = data;
-  try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify(allCachedData.value));
-  } catch {}
-}
-
+// Sync updates
 let unlistenUsage: (() => void) | null = null;
-let unlistenFocus: (() => void) | null = null;
-let lastFocusRefresh = 0;
 
-onMounted(() => {
-  // Render from local cache immediately. A delayed, silent refresh of the
-  // primary provider is enough — the main window already prefetches all four.
-  if (!currentUsage.value) {
-    fetchUsage();
-  }
-  setTimeout(fetchAllUsage, 8000);
-  listen<ProviderUsageData>('usage-updated', (event) => handleUsageUpdated(event.payload)).then((un) => {
-    unlistenUsage = un;
+onMounted(async () => {
+  // Sync latest cached usage from backend
+  try {
+    const list: ProviderUsageData[] = await invoke('get_all_providers_usage');
+    if (Array.isArray(list)) {
+      list.forEach((item) => {
+        allCachedData.value[item.provider] = item;
+      });
+      localStorage.setItem(CACHE_KEY, JSON.stringify(allCachedData.value));
+    }
+  } catch {}
+
+  // Listen to background sync updates
+  unlistenUsage = await listen<Record<ProviderType, ProviderUsageData>>('usage-updated', (event) => {
+    if (event.payload) {
+      allCachedData.value = { ...allCachedData.value, ...event.payload };
+      localStorage.setItem(CACHE_KEY, JSON.stringify(allCachedData.value));
+    }
   });
-  // 窗口隐藏期间事件可能丢失，重新显示/聚焦时补一次非强制刷新
-  // （Rust 缓存通常已被后台线程刷新，秒回）。
-  getCurrentWebviewWindow().listen('tauri://focus', () => {
-    // 窗口隐藏期间 storage 事件可能丢失，聚焦时重读图标显隐状态
-    trayIconHidden.value = localStorage.getItem('arkbar_tray_icon_visible') === 'false';
-    const now = Date.now();
-    if (now - lastFocusRefresh < 30000) return;
-    lastFocusRefresh = now;
-    fetchAllUsage();
-  }).then((un) => {
-    unlistenFocus = un;
+
+  // Listen to local storage changes from settings
+  window.addEventListener('storage', (e) => {
+    if (e.key === 'arkbar_provider_tabs') {
+      providerTabs.value = loadProviderTabs();
+    } else if (e.key === 'arkbar_notch_position') {
+      notchPosition.value = (e.newValue as NotchPosition) || 'right';
+    } else if (e.key === 'arkbar_notch_auto_hide') {
+      autoHide.value = e.newValue === 'true';
+    } else if (e.key === CACHE_KEY) {
+      allCachedData.value = loadCachedData();
+    }
   });
-  window.addEventListener('storage', handleStorageChange);
-  window.addEventListener('pointerup', releaseHoverFreeze);
-  window.addEventListener('mouseup', releaseHoverFreeze);
 });
 
 onUnmounted(() => {
   if (unlistenUsage) unlistenUsage();
-  if (unlistenFocus) unlistenFocus();
-  if (quickMenuTimer) clearTimeout(quickMenuTimer);
-  if (hoverTimer) clearTimeout(hoverTimer);
-  window.removeEventListener('storage', handleStorageChange);
-  window.removeEventListener('pointerup', releaseHoverFreeze);
-  window.removeEventListener('mouseup', releaseHoverFreeze);
 });
 </script>
 
 <template>
   <div
-    @mouseenter="handleMouseEnter"
-    @mouseleave="handleMouseLeave"
-    @contextmenu.prevent="handleContextMenu"
-    class="w-full h-full select-none bg-[#0b0f19]/95 text-slate-200 border border-slate-700/60 rounded-xl shadow-2xl backdrop-blur-md group hover:border-indigo-500/40 transition-colors overflow-hidden flex flex-col justify-center relative"
-    style="-webkit-user-drag: none; user-select: none;"
+    class="w-screen h-screen relative select-none overflow-visible flex items-center"
+    :class="[
+      notchPosition === 'left' ? 'justify-start pl-0' : 'justify-end pr-0',
+    ]"
   >
-    <!-- Native drag layer: OS moves the window. Buttons sit above this. -->
-    <div
-      v-if="!showQuickMenu"
-      data-tauri-drag-region
-      class="absolute inset-0 z-0 cursor-grab active:cursor-grabbing"
-      @pointerdown="freezeHoverForDrag"
-    ></div>
-
-    <!-- State 1: Right-Click Quick Actions Overlay (44px) -->
-    <div
-      v-if="showQuickMenu"
-      class="relative z-10 w-full h-11 flex items-center justify-between px-2 text-[11px] font-medium pointer-events-auto"
-      data-no-drag
-    >
-      <button
-        @click.stop="cycleProvider(); showQuickMenu = false;"
-        class="px-1.5 py-1 hover:bg-slate-800 rounded text-slate-300 hover:text-white transition flex items-center gap-1 cursor-pointer"
-        title="切换下一服务商"
+    <!-- ============================================================ -->
+    <!-- SPEECH BUBBLE FLYOUT POPOVER CARD (Images 0 & 1)             -->
+    <!-- ============================================================ -->
+    <Transition :name="notchPosition === 'left' ? 'spring-pop-left' : 'spring-pop'">
+      <div
+        v-if="activeHoverId && activeHoverData"
+        class="absolute z-50 pointer-events-auto"
+        :style="{
+          top: `${Math.max(24, Math.min(360, 48 + activeHoverIndex * 70))}px`,
+          [notchPosition === 'left' ? 'left' : 'right']: '82px',
+        }"
+        @mouseenter="handlePopoverMouseEnter"
+        @mouseleave="handlePopoverMouseLeave"
       >
-        <span>🔄</span>
-        <span>切换</span>
-      </button>
-      <button
-        @click.stop="openMain()"
-        class="px-1.5 py-1 hover:bg-slate-800 rounded text-slate-300 hover:text-white transition flex items-center gap-1 cursor-pointer"
-        title="打开主面板"
-      >
-        <span>🪟</span>
-        <span>面板</span>
-      </button>
-      <button
-        @click.stop="closeWidget"
-        class="px-1.5 py-1 hover:bg-slate-800 rounded text-slate-300 hover:text-white transition flex items-center gap-1 cursor-pointer"
-        title="隐藏悬浮窗"
-      >
-        <span>✖</span>
-        <span>隐藏</span>
-      </button>
-      <button
-        @click.stop="handleExitApp"
-        class="px-1.5 py-1 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 rounded transition flex items-center gap-1 font-bold cursor-pointer"
-        title="退出 ArkBar"
-      >
-        <span>🚪</span>
-        <span>退出</span>
-      </button>
-    </div>
-
-    <!-- State 2: Multi-Provider Hover Dashboard (Expanded View) -->
-    <div
-      v-else-if="isHovered && authorizedProviders.length > 1"
-      class="relative z-10 w-full h-full p-2 flex flex-col justify-between pointer-events-none"
-    >
-      <div class="flex items-center justify-between pb-1 border-b border-slate-800/80 mb-1 px-1">
-        <div class="flex items-center gap-1 text-[10px] text-slate-400 font-semibold">
-          <span>✨</span>
-          <span>已授权厂商用量</span>
-        </div>
-        <div class="flex items-center gap-1 pointer-events-auto">
-          <button
-            @click.stop="fetchUsage"
-            :disabled="isRefreshing"
-            class="text-slate-400 hover:text-white p-0.5 rounded hover:bg-slate-800 transition cursor-pointer"
-            title="刷新数据"
-          >
-            <RefreshCw class="w-2.5 h-2.5" :class="{ 'animate-spin': isRefreshing }" />
-          </button>
-          <button
-            @click.stop="closeWidget"
-            class="text-slate-400 hover:text-rose-400 p-0.5 rounded hover:bg-slate-800 transition cursor-pointer"
-            title="关闭悬浮窗"
-          >
-            <X class="w-2.5 h-2.5" />
-          </button>
-        </div>
-      </div>
-
-      <!-- Provider Rows List -->
-      <div class="flex-1 flex flex-col justify-around gap-1">
-        <div
-          v-for="item in authorizedProviders"
-          :key="item.id"
-          class="flex items-center justify-between px-1.5 py-1 rounded-lg"
-          :class="item.id === primaryProvider ? 'bg-indigo-950/40 border border-indigo-500/30' : 'border border-transparent'"
-        >
-          <!-- Left: Provider Icon & Name (button so the rest of the row stays draggable) -->
-          <button
-            type="button"
-            class="flex items-center gap-1.5 min-w-[72px] pointer-events-auto cursor-pointer rounded px-0.5 hover:bg-slate-800/60"
-            :title="`点击将 ${item.name} 设为首选常驻`"
-            @click.stop="setPrimary(item.id)"
-          >
-            <span class="text-xs">{{ item.icon }}</span>
-            <span class="text-[10px] font-medium text-slate-200 truncate">{{ item.name }}</span>
-          </button>
-
-          <!-- Center: Progress Mini Bar -->
-          <div class="flex-1 mx-2 flex items-center gap-1.5 pointer-events-none">
-            <div class="flex-1 bg-slate-800 h-1.5 rounded-full overflow-hidden">
-              <div
-                class="h-full rounded-full bg-gradient-to-r transition-all duration-300"
-                :class="getBarColor(item.data.primary_session_percent != null ? Math.round(item.data.primary_session_percent) : null)"
-                :style="{ width: `${item.data.primary_session_percent != null ? Math.round(item.data.primary_session_percent) : 0}%` }"
-              ></div>
-            </div>
-            <span
-              class="text-[9px] font-mono font-bold w-7 text-right"
-              :class="getTextColor(item.data.primary_session_percent != null ? Math.round(item.data.primary_session_percent) : null)"
-            >
-              {{ item.data.primary_session_percent != null ? `${Math.round(item.data.primary_session_percent)}%` : '--' }}
-            </span>
-          </div>
-
-          <!-- Right: Reset Time or Star Badge -->
-          <div class="text-[9px] font-mono min-w-[38px] text-right pointer-events-none">
-            <span
-              v-if="item.id === primaryProvider"
-              class="text-indigo-400 font-bold"
-              :title="item.data.primary_reset_at ? `刷新时间: ${formatExactTime(item.data.primary_reset_at)}` : '当前首选常驻'"
-            >
-              {{ formatMiniReset(item.data.primary_reset_at) || '首选' }}
-            </span>
-            <span
-              v-else
-              class="text-slate-400"
-              :title="item.data.primary_reset_at ? `刷新时间: ${formatExactTime(item.data.primary_reset_at)}` : ''"
-            >
-              {{ formatMiniReset(item.data.primary_reset_at) }}
-            </span>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- State 3: Compact Single-Row Pill Display (44px) -->
-    <div
-      v-else
-      class="relative z-10 w-full h-11 flex items-center justify-between px-2.5 py-1 pointer-events-none"
-    >
-      <!-- Left: Provider Pill (Click to cycle). Rest of the pill is a native drag region. -->
-      <button
-        type="button"
-        class="flex items-center space-x-1.5 pointer-events-auto cursor-pointer hover:opacity-80 transition py-0.5 px-1 rounded-lg hover:bg-slate-800/60"
-        title="点击切换展示厂商 (悬停展开所有已授权厂商，右键呼出菜单)"
-        @click.stop="cycleProvider"
-      >
-        <span class="text-sm select-none">{{ currentUsage?.icon || allProvidersList.find(p => p.id === primaryProvider)?.icon || '🌋' }}</span>
-        <span class="text-[10px] font-bold text-slate-300 font-mono">
-          {{ currentUsage?.provider_name?.split(' ')[0] || allProvidersList.find(p => p.id === primaryProvider)?.name || 'Ark' }}
-        </span>
-      </button>
-
-      <!-- Center: Progress & Usage -->
-      <div class="flex-1 mx-2 flex flex-col justify-center space-y-0.5 pointer-events-none">
-        <div class="flex items-center justify-between text-[9px] font-mono leading-none">
-          <span class="text-slate-400 font-sans truncate">
-            <template v-if="currentUsage?.token_summary?.today_tokens">
-              今日 {{ formatTokensShort(currentUsage.token_summary.today_tokens) }}
-            </template>
-            <template v-else>
-              {{ primaryProvider === 'grok' ? '周期用量' : '5h用量' }}
-            </template>
-          </span>
-          <div class="flex items-center gap-1">
-            <span
-              v-if="currentUsage?.primary_reset_at"
-              class="text-slate-400 text-[8px]"
-              :title="`刷新时间: ${formatExactTime(currentUsage.primary_reset_at)}`"
-            >
-              {{ formatMiniReset(currentUsage.primary_reset_at) }}
-            </span>
-            <span v-if="currentPercent !== null" class="font-bold" :class="getTextColor(currentPercent)">
-              {{ currentPercent }}%
-            </span>
-            <span v-else class="text-slate-500">
-              {{ currentUsage?.is_connected ? '0%' : (isRefreshing ? '同步中' : '未连接') }}
-            </span>
-          </div>
-        </div>
-        <div class="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden p-0.5">
+        <!-- Speech Bubble Container -->
+        <div class="relative flex items-center">
+          <!-- Caret Pointer Triangle (Right-docked: points right to the notch icon) -->
           <div
-            class="h-full rounded-full bg-gradient-to-r transition-all duration-300"
-            :class="getBarColor(currentPercent)"
-            :style="{ width: `${currentPercent ?? (currentUsage?.is_connected ? 0 : (isRefreshing ? 50 : 10))}%` }"
-          ></div>
+            v-if="notchPosition !== 'left'"
+            class="absolute -right-2.5 w-0 h-0 border-t-[8px] border-t-transparent border-b-[8px] border-b-transparent border-l-[10px] border-l-[#1e1f24]/95 drop-shadow-[2px_0_2px_rgba(0,0,0,0.15)]"
+          />
+
+          <!-- Main Card Box -->
+          <div
+            class="w-[304px] glass-popover dark:bg-[#1e1f24]/95 text-neutral-900 dark:text-neutral-100 rounded-[22px] p-4 shadow-[0_22px_45px_rgba(0,0,0,0.38)] border border-black/10 dark:border-white/15 backdrop-blur-3xl overflow-hidden"
+          >
+            <!-- 1. Header: Icon + Title + Action -->
+            <div class="flex items-center justify-between pb-3 border-b border-black/5 dark:border-white/10">
+              <div class="flex items-center gap-2.5">
+                <div
+                  class="w-7 h-7 rounded-lg bg-neutral-200 dark:bg-neutral-800/80 flex items-center justify-center p-1.5 shadow-sm text-neutral-800 dark:text-white"
+                >
+                  <ProviderIcon :name="activeHoverId" class="w-4 h-4" />
+                </div>
+                <h3 class="text-[15px] font-bold tracking-tight text-neutral-900 dark:text-white">
+                  {{ activeHoverData.provider_name }} 用量
+                </h3>
+              </div>
+
+              <button
+                @click="openSettings"
+                class="p-1.5 rounded-lg text-neutral-400 hover:text-white hover:bg-white/10 transition-colors"
+                title="打开偏好设置"
+              >
+                <Settings class="w-4 h-4" />
+              </button>
+            </div>
+
+            <!-- 2. Groups & Limit Cards -->
+            <div class="pt-3 max-h-[360px] overflow-y-auto space-y-3">
+              <!-- Teamo Special Card: Balance & Today Cost -->
+              <div
+                v-if="activeHoverId === 'teamo' && activeHoverData.extension?.balance"
+                class="bg-black/[0.04] dark:bg-white/[0.05] rounded-xl p-3 border border-black/5 dark:border-white/5"
+              >
+                <div class="flex items-center justify-between text-xs text-neutral-500 dark:text-neutral-400 mb-1">
+                  <span>账户余额</span>
+                  <span>今日消费</span>
+                </div>
+                <div class="flex items-center justify-between">
+                  <span class="text-xl font-bold text-emerald-500 dark:text-emerald-400">
+                    ${{ activeHoverData.extension.balance.value.toFixed(2) }}
+                    <span class="text-xs font-normal text-neutral-400">{{ activeHoverData.extension.balance.currency }}</span>
+                  </span>
+                  <span class="text-sm font-semibold text-neutral-700 dark:text-neutral-300">
+                    ${{ (activeHoverData.extension.today_cost?.value ?? 0).toFixed(2) }}
+                  </span>
+                </div>
+              </div>
+
+              <!-- Standard Plan Groups (Gemini Models, Coding Plan, Grok Build, etc.) -->
+              <div
+                v-for="(group, gIdx) in activeHoverData.groups"
+                :key="gIdx"
+                class="bg-black/[0.03] dark:bg-white/[0.05] rounded-xl p-3 border border-black/5 dark:border-white/5 space-y-3"
+              >
+                <div v-if="group.group_name" class="text-xs font-semibold text-neutral-500 dark:text-neutral-400">
+                  {{ group.group_name }}
+                </div>
+
+                <div
+                  v-for="(period, pIdx) in group.periods"
+                  :key="pIdx"
+                  class="space-y-1.5"
+                >
+                  <!-- Label & Reset Time -->
+                  <div class="flex items-center justify-between text-xs">
+                    <span class="font-medium text-neutral-700 dark:text-neutral-300">
+                      {{ period.name || period.label }}
+                    </span>
+                    <span class="text-neutral-400 dark:text-neutral-400 text-[11px]">
+                      {{ formatResetLabel(period.reset_at) }}
+                    </span>
+                  </div>
+
+                  <!-- Progress Bar -->
+                  <div class="h-1.5 w-full bg-neutral-200 dark:bg-neutral-700/60 rounded-full overflow-hidden">
+                    <div
+                      class="h-full rounded-full transition-all duration-700 ease-out"
+                      :style="{
+                        width: `${Math.min(100, Math.max(0, period.used_percent))}%`,
+                        backgroundColor: getRingStrokeColor(period.used_percent),
+                      }"
+                    />
+                  </div>
+
+                  <!-- Percentage & Remaining -->
+                  <div class="text-[11px] text-neutral-500 dark:text-neutral-400 font-medium">
+                    {{ Math.round(period.used_percent) }}% 已用 · {{ Math.max(0, 100 - Math.round(period.used_percent)) }}% 剩余
+                  </div>
+                </div>
+              </div>
+
+              <!-- Token / Cache Hit Rate badge if supported -->
+              <div
+                v-if="activeHoverData.token_summary"
+                class="flex items-center justify-between px-1 text-[11px] text-neutral-400"
+              >
+                <span>今日 Token: {{ activeHoverData.token_summary.today_tokens.toLocaleString() }}</span>
+                <span v-if="activeHoverData.token_summary.cache_hit_rate">
+                  ⚡ 缓存命中 {{ activeHoverData.token_summary.cache_hit_rate }}%
+                </span>
+              </div>
+            </div>
+
+            <!-- 3. Footer: Status Indicator (工作中 刚刚) -->
+            <div class="pt-3 mt-2 border-t border-black/5 dark:border-white/10 flex items-center justify-between text-xs text-neutral-500 dark:text-neutral-400">
+              <div class="flex items-center gap-1.5">
+                <span class="font-medium text-neutral-700 dark:text-neutral-300">{{ activeHoverData.provider_name }}</span>
+                <span class="text-[11px] text-neutral-400">· 已连接</span>
+              </div>
+
+              <div class="flex items-center gap-1 text-[11px] text-emerald-500 dark:text-emerald-400">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                <span>正常同步</span>
+                <span class="text-neutral-400 ml-1">刚刚</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Caret Pointer Triangle (Left-docked: points left) -->
+          <div
+            v-if="notchPosition === 'left'"
+            class="absolute -left-2.5 w-0 h-0 border-t-[8px] border-t-transparent border-b-[8px] border-b-transparent border-r-[10px] border-r-[#1e1f24]/95 drop-shadow-[-2px_0_2px_rgba(0,0,0,0.15)]"
+          />
         </div>
       </div>
+    </Transition>
 
-      <!-- Right: Mini Actions -->
-      <div class="flex items-center space-x-0.5 shrink-0 pointer-events-auto">
-        <button
-          v-if="trayIconHidden"
-          @click.stop="restoreTrayIcon"
-          class="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
-          title="恢复菜单栏图标"
+    <!-- ============================================================ -->
+    <!-- THE SCREEN EDGE NOTCH DOCK (Images 0 & 1)                   -->
+    <!-- ============================================================ -->
+    <div
+      class="group relative z-40 pointer-events-auto flex flex-col items-center select-none"
+      :class="[
+        notchPosition === 'left' ? 'rounded-r-[26px] pl-2 pr-3.5' : 'rounded-l-[26px] pr-2 pl-3.5',
+        autoHide ? 'opacity-80 hover:opacity-100' : 'opacity-100',
+      ]"
+      @mouseenter="isHoveringNotch = true"
+      @mouseleave="isHoveringNotch = false"
+    >
+      <!-- Background Frosted Pill Container -->
+      <div
+        class="glass-notch dark:bg-[#16171b]/92 border border-white/10 shadow-[-10px_0_30px_rgba(0,0,0,0.5)] py-4 flex flex-col items-center gap-4 transition-all duration-300"
+        :class="[
+          notchPosition === 'left' ? 'rounded-r-[26px] border-l-0 pl-1.5 pr-2.5' : 'rounded-l-[26px] border-r-0 pr-1.5 pl-2.5',
+          'w-[64px]',
+        ]"
+      >
+        <!-- Top Drag Grip Handle -->
+        <div
+          class="cursor-grab active:cursor-grabbing text-neutral-500 hover:text-neutral-300 py-1 transition-colors"
+          title="按住拖拽调整刘海位置"
+          @mousedown="handleDragMouseDown"
         >
-          <PanelTop class="w-2.5 h-2.5" />
-        </button>
+          <GripVertical class="w-4 h-4 opacity-50 hover:opacity-100" />
+        </div>
+
+        <!-- Provider Circular Rings List -->
+        <div class="flex flex-col items-center gap-4">
+          <div
+            v-for="(item, index) in notchProviders"
+            :key="item.id"
+            class="relative flex flex-col items-center cursor-pointer group/ring transition-transform duration-200"
+            :class="activeHoverId === item.id ? 'scale-110' : 'hover:scale-105'"
+            @mouseenter="handleProviderMouseEnter(item.id, index)"
+            @mouseleave="handleProviderMouseLeave"
+            @click="openSettings"
+          >
+            <!-- Circular Activity Gauge Ring -->
+            <div class="relative w-11 h-11 flex items-center justify-center">
+              <svg class="w-11 h-11 -rotate-90 origin-center" viewBox="0 0 44 44">
+                <!-- Track background circle -->
+                <circle
+                  cx="22"
+                  cy="22"
+                  r="18"
+                  fill="none"
+                  stroke="rgba(255, 255, 255, 0.12)"
+                  stroke-width="3.5"
+                />
+                <!-- Progress animated circle -->
+                <circle
+                  cx="22"
+                  cy="22"
+                  r="18"
+                  fill="none"
+                  stroke-width="3.5"
+                  stroke-linecap="round"
+                  class="gauge-ring"
+                  :stroke="getRingStrokeColor(getProviderDisplayPercent(item.id, item.notch_metric))"
+                  :stroke-dasharray="CIRCUMFERENCE"
+                  :stroke-dashoffset="getRingDashOffset(getProviderDisplayPercent(item.id, item.notch_metric))"
+                />
+              </svg>
+
+              <!-- Center Provider SVG Logo -->
+              <div
+                class="absolute inset-0 m-auto w-7 h-7 rounded-full bg-[#202126] flex items-center justify-center p-1.5 shadow-inner text-neutral-200 group-hover/ring:text-white transition-colors"
+              >
+                <ProviderIcon :name="item.id" class="w-4 h-4" />
+              </div>
+            </div>
+
+            <!-- Bold Percentage Text beneath Ring -->
+            <div class="text-[13px] font-bold text-white tracking-tight text-center mt-1 leading-none drop-shadow-sm">
+              {{ getProviderBadgeText(item.id, item.notch_metric) }}
+            </div>
+          </div>
+        </div>
+
+        <!-- Bottom Settings Shortcut -->
         <button
-          @click.stop="fetchUsage"
-          :disabled="isRefreshing"
-          class="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
-          title="刷新数据"
+          @click="openSettings"
+          class="mt-1 p-1.5 rounded-full text-neutral-500 hover:text-neutral-200 hover:bg-white/10 transition-colors"
+          title="打开 ArkBar 设置中心"
         >
-          <RefreshCw class="w-2.5 h-2.5" :class="{ 'animate-spin': isRefreshing }" />
-        </button>
-        <button
-          @click.stop="closeWidget"
-          class="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-slate-800 transition cursor-pointer"
-          title="关闭悬浮窗"
-        >
-          <X class="w-2.5 h-2.5" />
+          <Settings class="w-3.5 h-3.5" />
         </button>
       </div>
     </div>
