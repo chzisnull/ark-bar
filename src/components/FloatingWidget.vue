@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue';
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { ProviderType, ProviderUsageData, NotchMetric } from '../types';
@@ -30,7 +30,38 @@ function loadProviderTabs(): ProviderTabItem[] {
     const raw = localStorage.getItem('arkbar_provider_tabs');
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const validIds: ProviderType[] = ['antigravity', 'grok', 'volcengine', 'codex', 'teamo'];
+        const nameMap: Record<ProviderType, string> = {
+          antigravity: 'Antigravity',
+          grok: 'Grok',
+          volcengine: '火山方舟',
+          codex: 'Codex',
+          teamo: 'Teamo',
+        };
+        const result: ProviderTabItem[] = [];
+        for (const item of parsed) {
+          if (item && item.id && validIds.includes(item.id) && !result.some((r) => r.id === item.id)) {
+            result.push({
+              id: item.id,
+              name: item.name || nameMap[item.id as ProviderType],
+              visible: item.visible !== false,
+              notch_metric: item.notch_metric || 'session',
+            });
+          }
+        }
+        for (const id of validIds) {
+          if (!result.some((r) => r.id === id)) {
+            result.push({
+              id,
+              name: nameMap[id],
+              visible: true,
+              notch_metric: 'session',
+            });
+          }
+        }
+        return result;
+      }
     }
   } catch {}
   return DEFAULT_TABS;
@@ -182,22 +213,26 @@ function scheduleFold() {
   }, FOLD_GRACE);
 }
 
-// Position card vertically centered on cell, with curved tail pointing at ring center
+// Position card vertically centered on ring, with curved tail pointing directly at ring center
 function placeCard(targetEl: HTMLElement) {
-  const cr = targetEl.getBoundingClientRect();
-  const cy = cr.top + cr.height / 2;
+  // Find the exact circular ring gauge element for vertical center
+  const ring = (targetEl.querySelector('.ringwrap') as HTMLElement) || targetEl;
+  const rr = ring.getBoundingClientRect();
+  const ringCenterY = rr.top + rr.height / 2;
   const H = window.innerHeight;
   const ch = cardRef.value?.offsetHeight || 260;
 
-  // Center vertically on ring, clamped so it never overflows top or bottom
-  let top = Math.round(cy - ch / 2);
+  // Center card vertically on ring, clamped so it never overflows top or bottom of window
+  let top = Math.round(ringCenterY - ch / 2);
   top = Math.max(16, Math.min(top, H - ch - 16));
   cardTop.value = top;
 
-  const ry = cy; // Ring vertical center
-  const th = 36;
-  const ty = Math.max(top + 18 + th / 2, Math.min(top + ch - 18 - th / 2, ry));
-  tailTop.value = Math.round(ty - th / 2);
+  // Tail height is 36px; tip is at Y = 18px (middle of tail)
+  // Clamp tail so it doesn't detach from the card rounded corners
+  const minTailY = top + 18;
+  const maxTailY = top + ch - 18;
+  const clampedTipY = Math.max(minTailY, Math.min(maxTailY, ringCenterY));
+  tailTop.value = Math.round(clampedTipY - 18);
   reportHot();
 }
 
@@ -285,10 +320,11 @@ function handlePointerAt(clientX: number, clientY: number) {
     return;
   }
 
-  // Check if pointer is inside card
+  // Check if pointer is inside card or bridge to pill
   if (activeHoverId.value && cardRef.value) {
     const cr = cardRef.value.getBoundingClientRect();
-    if (inRect(clientX, clientY, cr, 8)) {
+    const bridgeRect = new DOMRect(cr.left, cr.top, cr.width + 36, cr.height);
+    if (inRect(clientX, clientY, bridgeRect, 8)) {
       if (hideTimer) {
         clearTimeout(hideTimer);
         hideTimer = null;
@@ -474,6 +510,19 @@ async function refreshCurrentProvider(id: ProviderType | null) {
 let unlistenUsage: (() => void) | null = null;
 let unlistenPointer: (() => void) | null = null;
 let unlistenCursor: (() => void) | null = null;
+let unlistenTabs: (() => void) | null = null;
+
+watch(activeHoverId, (newId) => {
+  if (newId && notchPillRef.value) {
+    nextTick(() => {
+      const el = notchPillRef.value?.querySelector<HTMLElement>(`[data-provider="${newId}"]`);
+      if (el) {
+        placeCard(el);
+        requestAnimationFrame(() => placeCard(el));
+      }
+    });
+  }
+});
 
 onMounted(async () => {
   window.addEventListener('mousemove', handleDomMouseMove);
@@ -522,6 +571,13 @@ onMounted(async () => {
     }
   });
 
+  unlistenTabs = await listen<any>('provider_tabs_updated', (event) => {
+    if (event.payload && Array.isArray(event.payload)) {
+      providerTabs.value = loadProviderTabs();
+      nextTick(() => reportHot());
+    }
+  });
+
   window.addEventListener('storage', (e) => {
     if (e.key === 'arkbar_provider_tabs') {
       providerTabs.value = loadProviderTabs();
@@ -551,6 +607,7 @@ onUnmounted(() => {
   if (unlistenUsage) unlistenUsage();
   if (unlistenPointer) unlistenPointer();
   if (unlistenCursor) unlistenCursor();
+  if (unlistenTabs) unlistenTabs();
   if (foldTimer) clearTimeout(foldTimer);
   if (hideTimer) clearTimeout(hideTimer);
 });
@@ -562,7 +619,165 @@ onUnmounted(() => {
     class="fixed inset-0 pointer-events-none select-none flex items-center justify-end overflow-visible font-sans"
   >
     <!-- ============================================================ -->
-    <!-- UNIFIED INTERACTIVE ZONE (Right Screen Edge)                 -->
+    <!-- 1. SPEECH BUBBLE POPOVER CARD & ORGANIC TAIL (Anchored to Window) -->
+    <!-- ============================================================ -->
+    <Transition name="codenotch-pop">
+      <div v-if="!isFolded && activeHoverId" class="contents">
+        <!-- Organic Curved Wedge Tail (clip-path from Codenotch spec) -->
+        <div
+          id="tail"
+          :style="{
+            top: `${tailTop}px`,
+          }"
+        />
+
+        <!-- Speech Bubble Card Container -->
+        <div
+          ref="cardRef"
+          id="card"
+          class="pointer-events-auto"
+          :style="{
+            top: `${cardTop}px`,
+          }"
+        >
+          <!-- Card Header: Logo + Title + Status -->
+          <div class="flex items-center justify-between pb-2.5 mb-2.5 border-b border-white/[0.08]">
+            <div class="flex items-center gap-2">
+              <div class="w-6 h-6 rounded-lg bg-white/[0.07] border border-white/10 flex items-center justify-center p-1 text-white shadow-inner">
+                <ProviderIcon :name="activeHoverId" class="w-3.5 h-3.5" />
+              </div>
+              <div class="flex flex-col">
+                <h3 class="text-[13px] font-bold tracking-tight text-white leading-tight">
+                  {{ activeHoverData?.provider_name || activeHoverId }}
+                </h3>
+                <span class="text-[10px] text-[#8e8e93] leading-tight mt-0.5">
+                  {{ activeHoverData?.is_connected ? '运行正常' : '未连接' }}
+                </span>
+              </div>
+            </div>
+
+            <div class="flex items-center gap-2 text-[11px] text-[#8e8e93]">
+              <div class="flex items-center gap-1.5">
+                <span class="w-1.5 h-1.5 rounded-full" :class="activeHoverData?.is_connected ? 'bg-[#00FF88] shadow-[0_0_6px_#00FF88]' : 'bg-[#8e8e93]'" />
+                <span class="text-[10px]">实时配额</span>
+              </div>
+              <button
+                type="button"
+                class="p-1 -mr-1 rounded-md text-[#8e8e93] hover:bg-white/10 hover:text-white transition-colors cursor-pointer"
+                :class="{ 'animate-spin text-white': isRefreshingProvider }"
+                title="立即刷新配额"
+                @click.stop="refreshCurrentProvider(activeHoverId)"
+              >
+                <RotateCw class="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+
+          <!-- Card Body: Groups & Limit Rows (Fits naturally without clunky scrollbars!) -->
+          <div class="space-y-2.5">
+            <!-- Teamo Balance Card -->
+            <div
+              v-if="activeHoverId === 'teamo' && activeHoverData?.extension?.balance"
+              class="bg-white/[0.03] rounded-xl p-3 border border-white/[0.07]"
+            >
+              <div class="flex items-center justify-between text-[11px] text-[#8e8e93] mb-1.5">
+                <span>账户余额</span>
+                <span>今日消费</span>
+              </div>
+              <div class="flex items-center justify-between">
+                <span class="text-xl font-bold text-[#00FF88] tabular-nums">
+                  ${{ activeHoverData.extension.balance.value.toFixed(2) }}
+                  <span class="text-xs font-normal text-[#8e8e93] ml-0.5">{{ activeHoverData.extension.balance.currency }}</span>
+                </span>
+                <span class="text-sm font-semibold text-[#f5f5f7] tabular-nums">
+                  ${{ (activeHoverData.extension.today_cost?.value ?? 0).toFixed(2) }}
+                </span>
+              </div>
+            </div>
+
+            <!-- Limit Groups (Gemini Models, Claude Models, Grok Build, etc.) -->
+            <template v-if="activeHoverData && activeHoverData.groups && activeHoverData.groups.length > 0">
+              <div
+                v-for="(group, gIdx) in activeHoverData.groups"
+                :key="gIdx"
+                class="bg-white/[0.03] rounded-xl p-3 border border-white/[0.07] space-y-2.5"
+              >
+                <div v-if="group.group_name" class="flex items-center justify-between text-[11px] font-bold text-[#8e8e93] tracking-wide">
+                  <span>{{ group.group_name }}</span>
+                  <span v-if="group.edition" class="text-[10px] font-normal text-[#8e8e93]/80">{{ group.edition }}</span>
+                </div>
+
+                <div
+                  v-for="(period, pIdx) in group.periods"
+                  :key="pIdx"
+                  class="space-y-1.5"
+                >
+                  <!-- Label & Reset Time (nowrap + truncate to prevent awkward line breaks!) -->
+                  <div class="flex items-center justify-between gap-2 text-xs">
+                    <span class="font-medium text-[#f5f5f7] truncate">
+                      {{ period.name || period.label }}
+                    </span>
+                    <span class="text-[#8e8e93] text-[11px] whitespace-nowrap shrink-0 tabular-nums font-normal">
+                      {{ formatResetLabel(period.reset_at) }}
+                    </span>
+                  </div>
+
+                  <!-- Progress Bar Track & Fill -->
+                  <div class="h-1.5 w-full bg-[#26272b] rounded-full overflow-hidden">
+                    <div
+                      class="h-full rounded-full transition-all duration-700 ease-out"
+                      :style="{
+                        width: `${Math.min(100, Math.max(0, period.used_percent))}%`,
+                        backgroundColor: getRingStrokeColor(period.used_percent),
+                      }"
+                    />
+                  </div>
+
+                  <!-- Ratio Breakdown -->
+                  <div class="flex items-center justify-between text-[11px] text-[#8e8e93] font-medium tabular-nums">
+                    <span>{{ formatPercentValue(period.used_percent) }}% 已用</span>
+                    <span>{{ formatPercentValue(period.remaining_percent) }}% 剩余</span>
+                  </div>
+                </div>
+              </div>
+            </template>
+
+            <!-- Loading / Syncing placeholder if no data yet -->
+            <div v-else class="py-6 text-center text-xs text-[#8e8e93] flex flex-col items-center gap-2">
+              <RotateCw class="w-4 h-4 animate-spin text-[#8e8e93]" />
+              <span>正在同步用量读数…</span>
+            </div>
+
+            <!-- Token Summary (Tokens & Cache hit rate) -->
+            <div
+              v-if="activeHoverData?.token_summary"
+              class="flex items-center justify-between px-1 text-[11px] text-[#8e8e93] pt-0.5"
+            >
+              <span class="tabular-nums">今日 Token: {{ activeHoverData.token_summary.today_tokens.toLocaleString() }}</span>
+              <span v-if="activeHoverData.token_summary.cache_hit_rate" class="tabular-nums">
+                ⚡ 缓存命中 {{ activeHoverData.token_summary.cache_hit_rate }}%
+              </span>
+            </div>
+          </div>
+
+          <!-- Footer: Live Status Row (Codenotch: 工作中 刚刚) -->
+          <div class="pt-2.5 mt-2.5 border-t border-white/[0.08] flex items-center justify-between text-xs text-[#8e8e93]">
+            <div class="flex items-center gap-1.5">
+              <span class="font-medium text-[#f5f5f7]">{{ activeHoverData?.provider_name || activeHoverId }}</span>
+            </div>
+
+            <div class="flex items-center gap-1.5 text-[11px] text-[#e8e8ea]">
+              <RotateCw class="w-3 h-3 text-[#8e8e93] animate-spin" />
+              <span>工作中</span>
+              <span class="text-[10px] text-[#8e8e93]">· 刚刚</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- ============================================================ -->
+    <!-- 2. UNIFIED INTERACTIVE ZONE (Right Screen Edge)              -->
     <!-- ============================================================ -->
     <div
       class="relative pointer-events-auto flex items-center pr-0"
@@ -575,162 +790,7 @@ onUnmounted(() => {
         @mouseenter="unfold"
       />
 
-      <!-- 2. SPEECH BUBBLE POPOVER CARD & ORGANIC TAIL (Codenotch Style) -->
-      <Transition name="codenotch-pop">
-        <div v-if="!isFolded && activeHoverId" class="contents">
-          <!-- Organic Curved Wedge Tail (clip-path from Codenotch spec) -->
-          <div
-            id="tail"
-            :style="{
-              top: `${tailTop}px`,
-            }"
-          />
-
-          <!-- Speech Bubble Card Container -->
-          <div
-            ref="cardRef"
-            id="card"
-            :style="{
-              top: `${cardTop}px`,
-            }"
-          >
-            <!-- Card Header: Logo + Title + Status -->
-            <div class="flex items-center justify-between pb-2.5 mb-2.5 border-b border-white/[0.08]">
-              <div class="flex items-center gap-2">
-                <div class="w-6 h-6 rounded-lg bg-white/[0.07] border border-white/10 flex items-center justify-center p-1 text-white shadow-inner">
-                  <ProviderIcon :name="activeHoverId" class="w-3.5 h-3.5" />
-                </div>
-                <div class="flex flex-col">
-                  <h3 class="text-[13px] font-bold tracking-tight text-white leading-tight">
-                    {{ activeHoverData?.provider_name || activeHoverId }}
-                  </h3>
-                  <span class="text-[10px] text-[#8e8e93] leading-tight mt-0.5">
-                    {{ activeHoverData?.is_connected ? '运行正常' : '未连接' }}
-                  </span>
-                </div>
-              </div>
-
-              <div class="flex items-center gap-2 text-[11px] text-[#8e8e93]">
-                <div class="flex items-center gap-1.5">
-                  <span class="w-1.5 h-1.5 rounded-full" :class="activeHoverData?.is_connected ? 'bg-[#00FF88] shadow-[0_0_6px_#00FF88]' : 'bg-[#8e8e93]'" />
-                  <span class="text-[10px]">实时配额</span>
-                </div>
-                <button
-                  type="button"
-                  class="p-1 -mr-1 rounded-md text-[#8e8e93] hover:bg-white/10 hover:text-white transition-colors cursor-pointer"
-                  :class="{ 'animate-spin text-white': isRefreshingProvider }"
-                  title="立即刷新配额"
-                  @click.stop="refreshCurrentProvider(activeHoverId)"
-                >
-                  <RotateCw class="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </div>
-
-            <!-- Card Body: Groups & Limit Rows (Fits naturally without clunky scrollbars!) -->
-            <div class="space-y-2.5">
-              <!-- Teamo Balance Card -->
-              <div
-                v-if="activeHoverId === 'teamo' && activeHoverData?.extension?.balance"
-                class="bg-white/[0.03] rounded-xl p-3 border border-white/[0.07]"
-              >
-                <div class="flex items-center justify-between text-[11px] text-[#8e8e93] mb-1.5">
-                  <span>账户余额</span>
-                  <span>今日消费</span>
-                </div>
-                <div class="flex items-center justify-between">
-                  <span class="text-xl font-bold text-[#00FF88] tabular-nums">
-                    ${{ activeHoverData.extension.balance.value.toFixed(2) }}
-                    <span class="text-xs font-normal text-[#8e8e93] ml-0.5">{{ activeHoverData.extension.balance.currency }}</span>
-                  </span>
-                  <span class="text-sm font-semibold text-[#f5f5f7] tabular-nums">
-                    ${{ (activeHoverData.extension.today_cost?.value ?? 0).toFixed(2) }}
-                  </span>
-                </div>
-              </div>
-
-              <!-- Limit Groups (Gemini Models, Claude Models, Grok Build, etc.) -->
-              <template v-if="activeHoverData && activeHoverData.groups && activeHoverData.groups.length > 0">
-                <div
-                  v-for="(group, gIdx) in activeHoverData.groups"
-                  :key="gIdx"
-                  class="bg-white/[0.03] rounded-xl p-3 border border-white/[0.07] space-y-2.5"
-                >
-                  <div v-if="group.group_name" class="flex items-center justify-between text-[11px] font-bold text-[#8e8e93] tracking-wide">
-                    <span>{{ group.group_name }}</span>
-                    <span v-if="group.edition" class="text-[10px] font-normal text-[#8e8e93]/80">{{ group.edition }}</span>
-                  </div>
-
-                  <div
-                    v-for="(period, pIdx) in group.periods"
-                    :key="pIdx"
-                    class="space-y-1.5"
-                  >
-                    <!-- Label & Reset Time (nowrap + truncate to prevent awkward line breaks!) -->
-                    <div class="flex items-center justify-between gap-2 text-xs">
-                      <span class="font-medium text-[#f5f5f7] truncate">
-                        {{ period.name || period.label }}
-                      </span>
-                      <span class="text-[#8e8e93] text-[11px] whitespace-nowrap shrink-0 tabular-nums font-normal">
-                        {{ formatResetLabel(period.reset_at) }}
-                      </span>
-                    </div>
-
-                    <!-- Progress Bar Track & Fill -->
-                    <div class="h-1.5 w-full bg-[#26272b] rounded-full overflow-hidden">
-                      <div
-                        class="h-full rounded-full transition-all duration-700 ease-out"
-                        :style="{
-                          width: `${Math.min(100, Math.max(0, period.used_percent))}%`,
-                          backgroundColor: getRingStrokeColor(period.used_percent),
-                        }"
-                      />
-                    </div>
-
-                    <!-- Ratio Breakdown -->
-                    <div class="flex items-center justify-between text-[11px] text-[#8e8e93] font-medium tabular-nums">
-                      <span>{{ formatPercentValue(period.used_percent) }}% 已用</span>
-                      <span>{{ formatPercentValue(period.remaining_percent) }}% 剩余</span>
-                    </div>
-                  </div>
-                </div>
-              </template>
-
-              <!-- Loading / Syncing placeholder if no data yet -->
-              <div v-else class="py-6 text-center text-xs text-[#8e8e93] flex flex-col items-center gap-2">
-                <RotateCw class="w-4 h-4 animate-spin text-[#8e8e93]" />
-                <span>正在同步用量读数…</span>
-              </div>
-
-              <!-- Token Summary (Tokens & Cache hit rate) -->
-              <div
-                v-if="activeHoverData?.token_summary"
-                class="flex items-center justify-between px-1 text-[11px] text-[#8e8e93] pt-0.5"
-              >
-                <span class="tabular-nums">今日 Token: {{ activeHoverData.token_summary.today_tokens.toLocaleString() }}</span>
-                <span v-if="activeHoverData.token_summary.cache_hit_rate" class="tabular-nums">
-                  ⚡ 缓存命中 {{ activeHoverData.token_summary.cache_hit_rate }}%
-                </span>
-              </div>
-            </div>
-
-            <!-- Footer: Live Status Row (Codenotch: 工作中 刚刚) -->
-            <div class="pt-2.5 mt-2.5 border-t border-white/[0.08] flex items-center justify-between text-xs text-[#8e8e93]">
-              <div class="flex items-center gap-1.5">
-                <span class="font-medium text-[#f5f5f7]">{{ activeHoverData?.provider_name || activeHoverId }}</span>
-              </div>
-
-              <div class="flex items-center gap-1.5 text-[11px] text-[#e8e8ea]">
-                <RotateCw class="w-3 h-3 text-[#8e8e93] animate-spin" />
-                <span>工作中</span>
-                <span class="text-[10px] text-[#8e8e93]">· 刚刚</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </Transition>
-
-      <!-- 3. TOP MOVE HANDLE (Codenotch #move handle: hand icon for carrying/dragging) -->
+      <!-- 2. TOP MOVE HANDLE (Codenotch #move handle: hand icon for carrying/dragging) -->
       <div
         id="move"
         class="handle"
@@ -980,16 +1040,16 @@ onUnmounted(() => {
 
 #move {
   --arc: 0deg;
-  right: calc(38.7px - 28.5px);
-  top: calc(50% - 28.5px);
-  transform: translateY(-165px); /* Positioned over the top fillet pocket */
+  right: 10.2px;
+  top: -67.2px; /* Positioned directly over the top fillet pocket */
+  transform: none;
 }
 
 #orb {
   --arc: 270deg;
-  right: calc(38.7px - 28.5px);
-  top: calc(50% - 28.5px);
-  transform: translateY(165px); /* Positioned over the bottom fillet pocket */
+  right: 10.2px;
+  bottom: -67.2px; /* Positioned directly over the bottom fillet pocket */
+  transform: none;
 }
 
 .handle.is-folded-handle {

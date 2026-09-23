@@ -23,6 +23,9 @@ import {
 } from 'lucide-vue-next';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart';
+import pkg from '../../package.json';
+
+const appVersion = pkg.version;
 
 const props = defineProps<{
   envStatus: EnvironmentStatus | null;
@@ -47,24 +50,52 @@ const emit = defineEmits<{
 // Navigation Tabs
 const activeNavTab = ref<SettingsNavTab>('accounts');
 
+// Normalize tabs so all 5 supported providers are always available to configure or restore
+function normalizeTabs(tabs?: ProviderTabConfig[]): ProviderTabConfig[] {
+  const validIds: ProviderType[] = ['antigravity', 'grok', 'volcengine', 'codex', 'teamo'];
+  const nameMap: Record<ProviderType, string> = {
+    antigravity: 'Antigravity',
+    grok: 'Grok',
+    volcengine: '火山方舟',
+    codex: 'Codex',
+    teamo: 'Teamo',
+  };
+  const result: ProviderTabConfig[] = [];
+  if (tabs && Array.isArray(tabs)) {
+    for (const t of tabs) {
+      if (t && t.id && validIds.includes(t.id) && !result.some((r) => r.id === t.id)) {
+        result.push({
+          ...t,
+          name: t.name || nameMap[t.id],
+          visible: t.visible !== false,
+          notch_metric: t.notch_metric || (t.id === 'teamo' ? 'balance' : 'session'),
+          model_filter: t.model_filter || 'all',
+        });
+      }
+    }
+  }
+  for (const id of validIds) {
+    if (!result.some((r) => r.id === id)) {
+      result.push({
+        id,
+        name: nameMap[id],
+        visible: true,
+        notch_metric: id === 'teamo' ? 'balance' : 'session',
+        model_filter: 'all',
+      });
+    }
+  }
+  return result;
+}
+
 // Provider tabs copy
-const localTabs = ref<ProviderTabConfig[]>(
-  props.providerTabs
-    ? JSON.parse(JSON.stringify(props.providerTabs))
-    : [
-        { id: 'antigravity', name: 'Antigravity', visible: true, notch_metric: 'session', model_filter: 'gemini' },
-        { id: 'grok', name: 'Grok', visible: true, notch_metric: 'session', model_filter: 'all' },
-        { id: 'volcengine', name: '火山方舟', visible: true, notch_metric: 'weekly', model_filter: 'all' },
-        { id: 'codex', name: 'Codex', visible: true, notch_metric: 'session', model_filter: 'all' },
-        { id: 'teamo', name: 'Teamo', visible: true, notch_metric: 'balance', model_filter: 'all' },
-      ]
-);
+const localTabs = ref<ProviderTabConfig[]>(normalizeTabs(props.providerTabs));
 
 watch(
   () => props.providerTabs,
   (newVal) => {
     if (newVal) {
-      localTabs.value = JSON.parse(JSON.stringify(newVal));
+      localTabs.value = normalizeTabs(newVal);
     }
   },
   { deep: true }
@@ -376,7 +407,7 @@ async function toggleNotchWindow() {
         </button>
 
         <div class="text-[11px] text-neutral-500">
-          ArkBar 0.4.2
+          ArkBar {{ appVersion }}
         </div>
       </div>
     </div>
@@ -392,20 +423,26 @@ async function toggleNotchWindow() {
           <p class="text-xs text-neutral-400 mt-1">选择刘海读取哪些服务。</p>
         </div>
 
-        <!-- 1. 已连接 (Connected Section) -->
+        <!-- 1. 已连接 / 服务列表 (Connected Section) -->
         <div class="space-y-3">
-          <h3 class="text-xs font-bold text-neutral-400 uppercase tracking-wider">已连接</h3>
+          <div class="flex items-center justify-between">
+            <h3 class="text-xs font-bold text-neutral-400 uppercase tracking-wider">已连接服务</h3>
+            <span class="text-[11px] text-neutral-500">
+              {{ connectedTabs.length }} 个服务在刘海中显示
+            </span>
+          </div>
 
           <!-- Provider Cards -->
           <div class="space-y-2.5">
             <div
-              v-for="(item, index) in localTabs.filter((t) => t.visible)"
+              v-for="(item, index) in localTabs"
               :key="item.id"
               draggable="true"
               @dragstart="handleDragStart(index, $event)"
               @dragover="handleDragOver"
               @drop="handleDrop(index)"
               class="bg-[#202126] border border-white/5 rounded-xl p-3.5 hover:border-white/10 transition-all space-y-2.5"
+              :class="{ 'opacity-75': !item.visible }"
             >
               <!-- Card Header Row -->
               <div class="flex items-center justify-between">
@@ -420,8 +457,16 @@ async function toggleNotchWindow() {
                     <ProviderIcon :name="item.id" class="w-4 h-4" />
                   </div>
 
-                  <!-- Title -->
-                  <span class="font-bold text-sm text-white">{{ getProviderMeta(item.id).title }}</span>
+                  <!-- Title & Status Badge -->
+                  <div class="flex items-center gap-2">
+                    <span class="font-bold text-sm text-white">{{ getProviderMeta(item.id).title }}</span>
+                    <span
+                      v-if="!item.visible"
+                      class="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-neutral-400 font-normal border border-white/5"
+                    >
+                      已在刘海中隐藏
+                    </span>
+                  </div>
                 </div>
 
                 <!-- Right Action Controls -->
@@ -443,8 +488,9 @@ async function toggleNotchWindow() {
                   <!-- Apple-style Blue Switch Toggle -->
                   <button
                     @click="toggleProviderVisibility(item.id)"
-                    class="w-10 h-6 rounded-full transition-colors relative flex items-center px-0.5 focus:outline-none"
+                    class="w-10 h-6 rounded-full transition-colors relative flex items-center px-0.5 focus:outline-none cursor-pointer"
                     :class="item.visible ? 'bg-[#0a84ff]' : 'bg-neutral-700'"
+                    :title="item.visible ? '点击在刘海中隐藏' : '点击在刘海中恢复显示'"
                   >
                     <span
                       class="w-5 h-5 rounded-full bg-white shadow-md transform transition-transform"
@@ -758,7 +804,7 @@ async function toggleNotchWindow() {
           <div class="bg-[#202126] border border-white/5 rounded-xl p-4 flex items-center justify-between">
             <div>
               <h3 class="text-sm font-semibold text-white">检查新版本</h3>
-              <p class="text-xs text-neutral-400 mt-0.5">当前版本: v0.4.0</p>
+              <p class="text-xs text-neutral-400 mt-0.5">当前版本: v{{ appVersion }}</p>
             </div>
             <button
               @click="checkForUpdate"

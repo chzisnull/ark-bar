@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch, defineAsyncComponent } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { listen, emit as tauriEmit } from '@tauri-apps/api/event';
 import type { EnvironmentStatus, UpdateInfo, ProviderType, ProviderUsageData, TrayPercentMode, ProviderTabConfig } from './types';
 
 // Lazy load non-critical components to minimize initial bundle parsing
@@ -84,6 +84,7 @@ const providerTabs = ref<ProviderTabConfig[]>(loadProviderTabsConfig());
 function saveProviderTabs(tabs: ProviderTabConfig[]) {
   providerTabs.value = tabs;
   localStorage.setItem('arkbar_provider_tabs', JSON.stringify(tabs));
+  tauriEmit('provider_tabs_updated', tabs).catch(() => {});
   const visible = tabs.filter((t) => t.visible);
   if (visible.length > 0 && !visible.some((t) => t.id === activeProvider.value)) {
     handleSwitchProvider(visible[0].id);
