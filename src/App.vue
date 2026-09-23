@@ -25,7 +25,7 @@ const loadingMap = ref<Record<ProviderType, boolean>>({
 const DEFAULT_PROVIDER_TABS: ProviderTabConfig[] = [
   { id: 'antigravity', name: 'Antigravity', visible: true, notch_metric: 'session' },
   { id: 'grok', name: 'Grok', visible: true, notch_metric: 'session' },
-  { id: 'volcengine', name: '火山方舟', visible: true, notch_metric: 'weekly' },
+  { id: 'volcengine', name: '火山方舟', visible: true, notch_metric: 'session' },
   { id: 'codex', name: 'Codex', visible: true, notch_metric: 'session' },
   { id: 'teamo', name: 'Teamo', visible: true, notch_metric: 'balance' },
 ];

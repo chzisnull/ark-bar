@@ -20,7 +20,7 @@ interface ProviderTabItem {
 const DEFAULT_TABS: ProviderTabItem[] = [
   { id: 'antigravity', name: 'Antigravity', visible: true, notch_metric: 'session' },
   { id: 'grok', name: 'Grok', visible: true, notch_metric: 'session' },
-  { id: 'volcengine', name: '火山方舟', visible: true, notch_metric: 'weekly' },
+  { id: 'volcengine', name: '火山方舟', visible: true, notch_metric: 'session' },
   { id: 'codex', name: 'Codex', visible: true, notch_metric: 'session' },
   { id: 'teamo', name: 'Teamo', visible: true, notch_metric: 'balance' },
 ];
@@ -365,10 +365,17 @@ function getRingDashOffset(percent: number): number {
   return CIRCUMFERENCE - (clamped / 100) * CIRCUMFERENCE;
 }
 
-// Format reset time
+// Format percent value (keep clean decimals if fractional, otherwise integer)
+function formatPercentValue(val: number): string {
+  if (val == null || isNaN(val)) return '0';
+  return Number.isInteger(val) ? val.toString() : val.toFixed(2);
+}
+
+// Format reset time with live countdown matching official console
 function formatResetLabel(resetAt?: string): string {
   if (!resetAt) return '';
   const trimmed = resetAt.trim();
+  if (trimmed === 'rolling-5h') return '5小时滑动周期';
 
   let date: Date | null = null;
   if (/^\d+$/.test(trimmed)) {
@@ -382,16 +389,24 @@ function formatResetLabel(resetAt?: string): string {
   if (!date) return `${trimmed} 重置`;
 
   const now = new Date();
-  const days = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
-  const dayName = days[date.getDay()];
-  const hh = String(date.getHours()).padStart(2, '0');
-  const mm = String(date.getMinutes()).padStart(2, '0');
+  const diffMs = date.getTime() - now.getTime();
+  if (diffMs <= 0) return '刚刚已刷新';
 
-  const diffDays = Math.floor((date.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-  if (diffDays < 7) {
-    return `${dayName} ${hh}:${mm} 重置`;
+  const totalMins = Math.floor(diffMs / (1000 * 60));
+  const totalHours = Math.floor(totalMins / 60);
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  const mins = totalMins % 60;
+
+  if (days === 0 && totalHours < 24) {
+    if (totalHours === 0) {
+      return `${mins}分钟后重置`;
+    }
+    return `${totalHours}小时${mins > 0 ? `${mins}分钟` : ''}后重置`;
+  } else if (days < 7) {
+    return `${days}天${hours > 0 ? `${hours}小时` : ''}后重置`;
   }
-  return `${date.getMonth() + 1}月${date.getDate()}日 重置`;
+  return `${days}天后重置 (${date.getMonth() + 1}月${date.getDate()}日)`;
 }
 
 // Dragging window along edge using Move Handle
@@ -432,6 +447,29 @@ function openSettings(e?: MouseEvent) {
   invoke('show_main_window').catch(() => {});
 }
 
+// Manual instant refresh for currently hovered provider
+const isRefreshingProvider = ref(false);
+
+async function refreshCurrentProvider(id: ProviderType | null) {
+  if (!id || isRefreshingProvider.value) return;
+  isRefreshingProvider.value = true;
+  try {
+    const res = await invoke<ProviderUsageData>('get_unified_usage', {
+      provider: id,
+      customToken: null,
+      force: true,
+    });
+    if (res && res.provider) {
+      allCachedData.value[res.provider as ProviderType] = res;
+      localStorage.setItem(CACHE_KEY, JSON.stringify(allCachedData.value));
+    }
+  } catch (err) {
+    console.error('Failed to refresh provider:', err);
+  } finally {
+    isRefreshingProvider.value = false;
+  }
+}
+
 // Event unlisteners
 let unlistenUsage: (() => void) | null = null;
 let unlistenPointer: (() => void) | null = null;
@@ -464,15 +502,22 @@ onMounted(async () => {
     const list: ProviderUsageData[] = await invoke('get_all_providers_usage');
     if (Array.isArray(list)) {
       list.forEach((item) => {
-        allCachedData.value[item.provider] = item;
+        if (item && item.provider) {
+          allCachedData.value[item.provider as ProviderType] = item;
+        }
       });
       localStorage.setItem(CACHE_KEY, JSON.stringify(allCachedData.value));
     }
   } catch {}
 
-  unlistenUsage = await listen<Record<ProviderType, ProviderUsageData>>('usage-updated', (event) => {
-    if (event.payload) {
-      allCachedData.value = { ...allCachedData.value, ...event.payload };
+  unlistenUsage = await listen<any>('usage-updated', (event) => {
+    const payload = event.payload;
+    if (payload) {
+      if (typeof payload === 'object' && payload.provider && typeof payload.provider === 'string') {
+        allCachedData.value[payload.provider as ProviderType] = payload;
+      } else if (typeof payload === 'object') {
+        allCachedData.value = { ...allCachedData.value, ...payload };
+      }
       localStorage.setItem(CACHE_KEY, JSON.stringify(allCachedData.value));
     }
   });
@@ -565,9 +610,20 @@ onUnmounted(() => {
                 </div>
               </div>
 
-              <div class="flex items-center gap-1.5 text-[11px] text-[#8e8e93]">
-                <span class="w-1.5 h-1.5 rounded-full" :class="activeHoverData?.is_connected ? 'bg-[#00FF88] shadow-[0_0_6px_#00FF88]' : 'bg-[#8e8e93]'" />
-                <span class="text-[10px]">实时配额</span>
+              <div class="flex items-center gap-2 text-[11px] text-[#8e8e93]">
+                <div class="flex items-center gap-1.5">
+                  <span class="w-1.5 h-1.5 rounded-full" :class="activeHoverData?.is_connected ? 'bg-[#00FF88] shadow-[0_0_6px_#00FF88]' : 'bg-[#8e8e93]'" />
+                  <span class="text-[10px]">实时配额</span>
+                </div>
+                <button
+                  type="button"
+                  class="p-1 -mr-1 rounded-md text-[#8e8e93] hover:bg-white/10 hover:text-white transition-colors cursor-pointer"
+                  :class="{ 'animate-spin text-white': isRefreshingProvider }"
+                  title="立即刷新配额"
+                  @click.stop="refreshCurrentProvider(activeHoverId)"
+                >
+                  <RotateCw class="w-3.5 h-3.5" />
+                </button>
               </div>
             </div>
 
@@ -600,8 +656,9 @@ onUnmounted(() => {
                   :key="gIdx"
                   class="bg-white/[0.03] rounded-xl p-3 border border-white/[0.07] space-y-2.5"
                 >
-                  <div v-if="group.group_name" class="text-[11px] font-bold text-[#8e8e93] uppercase tracking-wider">
-                    {{ group.group_name }}
+                  <div v-if="group.group_name" class="flex items-center justify-between text-[11px] font-bold text-[#8e8e93] tracking-wide">
+                    <span>{{ group.group_name }}</span>
+                    <span v-if="group.edition" class="text-[10px] font-normal text-[#8e8e93]/80">{{ group.edition }}</span>
                   </div>
 
                   <div
@@ -631,8 +688,9 @@ onUnmounted(() => {
                     </div>
 
                     <!-- Ratio Breakdown -->
-                    <div class="text-[11px] text-[#8e8e93] font-medium tabular-nums">
-                      {{ Math.round(period.used_percent) }}% 已用 · {{ Math.max(0, 100 - Math.round(period.used_percent)) }}% 剩余
+                    <div class="flex items-center justify-between text-[11px] text-[#8e8e93] font-medium tabular-nums">
+                      <span>{{ formatPercentValue(period.used_percent) }}% 已用</span>
+                      <span>{{ formatPercentValue(period.remaining_percent) }}% 剩余</span>
                     </div>
                   </div>
                 </div>

@@ -517,6 +517,27 @@ pub fn peek_volcengine_usage() -> Option<ProviderUsageData> {
     VOLC_CACHE.peek()
 }
 
+fn get_volc_plan_tier() -> Option<String> {
+    if let Ok(home) = std::env::var("HOME") {
+        let p = std::path::Path::new(&home).join(".arkcli/config.yaml");
+        if let Ok(content) = std::fs::read_to_string(p) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("plan_tier:") {
+                    let parts: Vec<&str> = trimmed.split(':').collect();
+                    if parts.len() >= 2 {
+                        let tier = parts[1].trim().trim_matches('"').trim_matches('\'').to_string();
+                        if !tier.is_empty() {
+                            return Some(tier);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 fn fetch_volcengine_usage_uncached(force: bool) -> ProviderUsageData {
     match get_usage_plan() {
         Ok(json_val) => {
@@ -524,32 +545,67 @@ fn fetch_volcengine_usage_uncached(force: bool) -> ProviderUsageData {
             let mut primary_session_percent = None;
             let mut primary_reset_at = None;
 
+            // 优先查找所有 items 中任意包含有效 seat_id 的项，避免第一个为 agent-plan 时拿不到 seat_id
             let known_seat = json_val.get("items")
                 .and_then(|i| i.as_array())
-                .and_then(|arr| arr.first())
-                .and_then(|item| item.get("seat_id"))
-                .and_then(|s| s.as_str());
+                .and_then(|arr| {
+                    arr.iter().find_map(|item| {
+                        item.get("seat_id").and_then(|s| s.as_str()).filter(|s| !s.trim().is_empty())
+                    })
+                });
 
             // Session/weekly reset timestamps only exist on the seat API.
             // Wait for them here so the UI is not missing countdown badges.
             let seat_milestones = query_volc_seat_usage_cached(known_seat, force);
+            let plan_tier = get_volc_plan_tier();
 
             if let Some(items) = json_val.get("items").and_then(|i| i.as_array()) {
                 let items_len = items.len();
                 for item in items {
-                    let product = item.get("product").and_then(|p| p.as_str()).unwrap_or("Coding Plan").to_string();
-                    let edition = item.get("edition").and_then(|e| e.as_str()).unwrap_or("Enterprise").to_string();
+                    let raw_product = item.get("product").and_then(|p| p.as_str()).unwrap_or("Coding Plan");
+                    let raw_edition = item.get("edition").and_then(|e| e.as_str()).unwrap_or("Enterprise");
                     let mut periods = Vec::new();
 
-                    // 席位数据只应用于匹配的席位（单席位套餐始终应用），
-                    // 避免多席位账号把第一个席位的数值套到其他席位上
+                    let group_name = match raw_product {
+                        "coding-plan-team" | "coding-plan" => {
+                            if let Some(ref t) = plan_tier {
+                                let mut c = t.chars();
+                                let cap = match c.next() {
+                                    None => String::new(),
+                                    Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                                };
+                                format!("Coding Plan {}", cap)
+                            } else {
+                                "Coding Plan".to_string()
+                            }
+                        }
+                        "agent-plan-team" | "agent-plan" => {
+                            if let Some(ref t) = plan_tier {
+                                let mut c = t.chars();
+                                let cap = match c.next() {
+                                    None => String::new(),
+                                    Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                                };
+                                format!("Agent Plan {}", cap)
+                            } else {
+                                "Agent Plan".to_string()
+                            }
+                        }
+                        other => other.to_string(),
+                    };
+
+                    let edition_name = match raw_edition.to_lowercase().as_str() {
+                        "team" | "enterprise" => "团队版套餐".to_string(),
+                        "personal" => "个人版套餐".to_string(),
+                        other => format!("{} 套餐", other),
+                    };
+
+                    // 席位数据只应用于匹配的席位（单席位套餐或当前激活套餐始终应用）
                     let item_seat = item.get("seat_id").and_then(|s| s.as_str());
                     let seat_for_item = seat_milestones.as_ref().filter(|m| {
                         items_len == 1
-                            || m.seat_id
-                                .as_deref()
-                                .map(|s| item_seat == Some(s))
-                                .unwrap_or(false)
+                            || (item_seat.is_some() && m.seat_id.as_deref() == item_seat)
+                            || raw_product.contains("coding-plan")
                     });
 
                     if let Some(pers) = item.get("periods").and_then(|p| p.as_array()) {
@@ -560,47 +616,48 @@ fn fetch_volcengine_usage_uncached(force: bool) -> ProviderUsageData {
                             let used = p.get("used").and_then(|u| u.as_f64());
                             let total = p.get("total").and_then(|t| t.as_f64());
 
-                            let name = match label.as_str() {
-                                "session" => {
-                                    if let Some(ref m) = seat_for_item {
-                                        if let Some(rt) = &m.short_term_reset {
-                                            reset_at = Some(rt.clone());
-                                        }
-                                        if let Some(u) = m.short_term_usage {
-                                            percent = u;
-                                        }
+                            let is_short_term = label == "session" || label == "5h" || label.contains("session") || label.contains("5h");
+                            let is_weekly = label == "weekly" || label.contains("week");
+                            let is_monthly = label == "monthly" || label.contains("month");
+
+                            let name = if is_short_term {
+                                if let Some(ref m) = seat_for_item {
+                                    if let Some(rt) = &m.short_term_reset {
+                                        reset_at = Some(rt.clone());
                                     }
+                                    if let Some(u) = m.short_term_usage {
+                                        percent = u;
+                                    }
+                                }
+                                if reset_at.is_none() {
+                                    reset_at = Some("rolling-5h".to_string());
+                                }
+                                "近5小时用量".to_string()
+                            } else if is_weekly {
+                                if let Some(ref m) = seat_for_item {
+                                    if let Some(rt) = &m.weekly_reset {
+                                        reset_at = Some(rt.clone());
+                                    }
+                                    if let Some(u) = m.weekly_usage {
+                                        percent = u;
+                                    }
+                                }
+                                "近一周用量".to_string()
+                            } else if is_monthly {
+                                if let Some(ref m) = seat_for_item {
                                     if reset_at.is_none() {
-                                        reset_at = Some("rolling-5h".to_string());
+                                        reset_at = m.monthly_reset.clone();
                                     }
-                                    "近5小时用量".to_string()
-                                }
-                                "weekly" => {
-                                    if let Some(ref m) = seat_for_item {
-                                        if let Some(rt) = &m.weekly_reset {
-                                            reset_at = Some(rt.clone());
-                                        }
-                                        if let Some(u) = m.weekly_usage {
-                                            percent = u;
-                                        }
+                                    if let Some(u) = m.monthly_usage {
+                                        percent = u;
                                     }
-                                    "近一周用量".to_string()
                                 }
-                                "monthly" => {
-                                    if let Some(ref m) = seat_for_item {
-                                        if reset_at.is_none() {
-                                            reset_at = m.monthly_reset.clone();
-                                        }
-                                        if let Some(u) = m.monthly_usage {
-                                            percent = u;
-                                        }
-                                    }
-                                    "近一月用量".to_string()
-                                }
-                                other => other.to_string(),
+                                "近一月用量".to_string()
+                            } else {
+                                label.clone()
                             };
 
-                            if label == "session" && primary_session_percent.is_none() {
+                            if is_short_term && primary_session_percent.is_none() {
                                 primary_session_percent = Some(percent);
                                 primary_reset_at = reset_at.clone();
                             }
@@ -608,8 +665,8 @@ fn fetch_volcengine_usage_uncached(force: bool) -> ProviderUsageData {
                             periods.push(ProviderQuotaPeriod {
                                 label,
                                 name,
-                                used_percent: (percent * 10.0).round() / 10.0,
-                                remaining_percent: ((100.0 - percent).clamp(0.0, 100.0) * 10.0).round() / 10.0,
+                                used_percent: (percent * 100.0).round() / 100.0,
+                                remaining_percent: ((100.0 - percent).clamp(0.0, 100.0) * 100.0).round() / 100.0,
                                 reset_at,
                                 used,
                                 total,
@@ -619,10 +676,19 @@ fn fetch_volcengine_usage_uncached(force: bool) -> ProviderUsageData {
                     }
 
                     groups.push(ProviderPlanGroup {
-                        group_name: product,
-                        edition: Some(format!("{} 套餐", edition)),
+                        group_name,
+                        edition: Some(edition_name),
                         periods,
                     });
+                }
+            }
+
+            if primary_session_percent.is_none() {
+                if let Some(first_g) = groups.first() {
+                    if let Some(first_p) = first_g.periods.first() {
+                        primary_session_percent = Some(first_p.used_percent);
+                        primary_reset_at = first_p.reset_at.clone();
+                    }
                 }
             }
 
@@ -995,5 +1061,14 @@ mod tests {
         assert_eq!(unix_to_iso8601(1789137461), "2026-09-11T14:37:41Z");
         assert_eq!(unix_to_iso8601(1789315200), "2026-09-13T16:00:00Z");
         assert_eq!(unix_to_iso8601(1791302399), "2026-10-06T15:59:59Z");
+    }
+
+    #[test]
+    fn test_fetch_volcengine_live() {
+        let usage = fetch_volcengine_usage_uncached(true);
+        if usage.is_connected {
+            assert_eq!(usage.provider, "volcengine");
+            assert!(!usage.groups.is_empty());
+        }
     }
 }
