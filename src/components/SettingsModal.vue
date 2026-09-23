@@ -8,7 +8,6 @@ import type {
   TrayPercentMode,
   ProviderTabConfig,
   SettingsNavTab,
-  NotchPosition,
   NotchMetric,
 } from '../types';
 import ProviderIcon from './ProviderIcon.vue';
@@ -71,21 +70,14 @@ watch(
   { deep: true }
 );
 
-// Notch preferences
-const notchPosition = ref<NotchPosition>(
-  (localStorage.getItem('arkbar_notch_position') as NotchPosition) || 'right'
+// Notch mode preferences: 'hover' (default) | 'always' | 'hidden'
+const notchMode = ref<'hover' | 'always' | 'hidden'>(
+  (localStorage.getItem('arkbar_notch_mode') as any) || 'hover'
 );
-const autoHide = ref<boolean>(localStorage.getItem('arkbar_notch_auto_hide') === 'true');
 
-function setNotchPosition(pos: NotchPosition) {
-  notchPosition.value = pos;
-  localStorage.setItem('arkbar_notch_position', pos);
-  window.dispatchEvent(new Event('storage'));
-}
-
-function toggleAutoHide() {
-  autoHide.value = !autoHide.value;
-  localStorage.setItem('arkbar_notch_auto_hide', autoHide.value ? 'true' : 'false');
+function setNotchMode(mode: 'hover' | 'always' | 'hidden') {
+  notchMode.value = mode;
+  localStorage.setItem('arkbar_notch_mode', mode);
   window.dispatchEvent(new Event('storage'));
 }
 
@@ -384,7 +376,7 @@ async function toggleNotchWindow() {
         </button>
 
         <div class="text-[11px] text-neutral-500">
-          ArkBar 0.4.1
+          ArkBar 0.4.2
         </div>
       </div>
     </div>
@@ -581,56 +573,40 @@ async function toggleNotchWindow() {
         </div>
 
         <div class="space-y-4">
-          <!-- 刘海位置 -->
+          <!-- 刘海展示方式 (Codenotch Style) -->
           <div class="bg-[#202126] border border-white/5 rounded-xl p-4 space-y-3">
-            <h3 class="text-sm font-semibold text-white">刘海屏幕贴靠位置</h3>
+            <h3 class="text-sm font-semibold text-white">刘海展示方式</h3>
             <div class="grid grid-cols-3 gap-3">
               <button
-                @click="setNotchPosition('right')"
+                @click="setNotchMode('hover')"
                 class="p-3 rounded-lg border text-center transition-all"
-                :class="notchPosition === 'right' ? 'border-[#0a84ff] bg-[#0a84ff]/10 text-white' : 'border-white/5 bg-white/5 text-neutral-400 hover:text-white'"
+                :class="notchMode === 'hover' ? 'border-[#0a84ff] bg-[#0a84ff]/10 text-white' : 'border-white/5 bg-white/5 text-neutral-400 hover:text-white'"
               >
-                <div class="text-sm font-bold">右侧贴边</div>
-                <div class="text-[11px] text-neutral-400 mt-0.5">默认（推荐）</div>
+                <div class="text-sm font-bold">悬停时展开</div>
+                <div class="text-[11px] text-neutral-400 mt-0.5">默认（对齐 Codenotch）</div>
               </button>
 
               <button
-                @click="setNotchPosition('left')"
+                @click="setNotchMode('always')"
                 class="p-3 rounded-lg border text-center transition-all"
-                :class="notchPosition === 'left' ? 'border-[#0a84ff] bg-[#0a84ff]/10 text-white' : 'border-white/5 bg-white/5 text-neutral-400 hover:text-white'"
+                :class="notchMode === 'always' ? 'border-[#0a84ff] bg-[#0a84ff]/10 text-white' : 'border-white/5 bg-white/5 text-neutral-400 hover:text-white'"
               >
-                <div class="text-sm font-bold">左侧贴边</div>
-                <div class="text-[11px] text-neutral-400 mt-0.5">适合副屏使用</div>
+                <div class="text-sm font-bold">始终常驻</div>
+                <div class="text-[11px] text-neutral-400 mt-0.5">一直保持展开</div>
               </button>
 
               <button
-                @click="setNotchPosition('hidden')"
+                @click="setNotchMode('hidden')"
                 class="p-3 rounded-lg border text-center transition-all"
-                :class="notchPosition === 'hidden' ? 'border-[#0a84ff] bg-[#0a84ff]/10 text-white' : 'border-white/5 bg-white/5 text-neutral-400 hover:text-white'"
+                :class="notchMode === 'hidden' ? 'border-[#0a84ff] bg-[#0a84ff]/10 text-white' : 'border-white/5 bg-white/5 text-neutral-400 hover:text-white'"
               >
                 <div class="text-sm font-bold">隐藏刘海</div>
-                <div class="text-[11px] text-neutral-400 mt-0.5">仅保留菜单栏托盘</div>
+                <div class="text-[11px] text-neutral-400 mt-0.5">不显示屏幕刘海</div>
               </button>
             </div>
-          </div>
-
-          <!-- 自动贴边隐藏 -->
-          <div class="bg-[#202126] border border-white/5 rounded-xl p-4 flex items-center justify-between">
-            <div>
-              <h3 class="text-sm font-semibold text-white">闲置时自动半隐</h3>
-              <p class="text-xs text-neutral-400 mt-0.5">无鼠标悬停时自动降低透明度，避免遮挡代码编辑器</p>
-            </div>
-
-            <button
-              @click="toggleAutoHide"
-              class="w-10 h-6 rounded-full transition-colors relative flex items-center px-0.5"
-              :class="autoHide ? 'bg-[#0a84ff]' : 'bg-neutral-700'"
-            >
-              <span
-                class="w-5 h-5 rounded-full bg-white shadow-md transform transition-transform"
-                :class="autoHide ? 'translate-x-4' : 'translate-x-0'"
-              />
-            </button>
+            <p class="text-[11px] text-neutral-500 leading-relaxed">
+              悬停时展开模式下：鼠标未移入时，刘海收拢为屏幕右侧极简黑胶囊；鼠标放上去时即刻向外展开完整环形指标与气泡卡片。
+            </p>
           </div>
 
           <!-- 顶部系统菜单栏图标 -->

@@ -7,6 +7,7 @@ import ProviderIcon from './ProviderIcon.vue';
 import { Settings, GripVertical, RotateCw } from 'lucide-vue-next';
 
 const CACHE_KEY = 'arkbar_cached_providers_data';
+const FOLD_GRACE = 450; // Grace period before folding back to rest pill (Codenotch spec: 450ms)
 
 interface ProviderTabItem {
   id: ProviderType;
@@ -54,6 +55,16 @@ function loadCachedData(): Record<ProviderType, ProviderUsageData | null> {
 const allCachedData = ref<Record<ProviderType, ProviderUsageData | null>>(loadCachedData());
 const providerTabs = ref<ProviderTabItem[]>(loadProviderTabs());
 
+// Display mode: 'hover' (default: collapsed pill, expands on hover) | 'always' (stay open) | 'hidden'
+const notchMode = ref<'hover' | 'always' | 'hidden'>(
+  (localStorage.getItem('arkbar_notch_mode') as any) || 'hover'
+);
+
+// Folded state: default true if in hover mode (rest pill shown, expands on mouseover)
+const isFolded = ref<boolean>(notchMode.value === 'hover');
+const isHoveringNotch = ref<boolean>(false);
+let foldTimer: any = null;
+
 // Visible active providers in the Notch
 const notchProviders = computed(() => {
   return providerTabs.value
@@ -85,6 +96,29 @@ const activeHoverData = computed<ProviderUsageData | null>(() => {
   return allCachedData.value[activeHoverId.value] || null;
 });
 
+// Unfold the notch smoothly
+function unfold() {
+  if (notchMode.value === 'hidden') return;
+  if (foldTimer) {
+    clearTimeout(foldTimer);
+    foldTimer = null;
+  }
+  isFolded.value = false;
+}
+
+// Schedule fold back to resting pill
+function scheduleFold() {
+  if (notchMode.value === 'always' || notchMode.value === 'hidden') return;
+  if (foldTimer) clearTimeout(foldTimer);
+  if (isDragging || isHoveringNotch.value || activeHoverId.value) return;
+
+  foldTimer = setTimeout(() => {
+    if (!isHoveringNotch.value && !activeHoverId.value && !isDragging) {
+      isFolded.value = true;
+    }
+  }, FOLD_GRACE);
+}
+
 // Helper for rectangle intersection test with optional padding
 function inRect(x: number, y: number, r: DOMRect, pad: number): boolean {
   return x >= r.left - pad && y >= r.top - pad && x < r.right + pad && y < r.bottom + pad;
@@ -92,7 +126,7 @@ function inRect(x: number, y: number, r: DOMRect, pad: number): boolean {
 
 // Find which provider ring cell is currently under cursor
 function getCellAt(x: number, y: number): { id: ProviderType; el: HTMLElement } | null {
-  if (!notchPillRef.value) return null;
+  if (!notchPillRef.value || isFolded.value) return null;
   const cells = notchPillRef.value.querySelectorAll<HTMLElement>('.provider-cell');
   for (const el of cells) {
     const r = el.getBoundingClientRect();
@@ -107,6 +141,15 @@ function getCellAt(x: number, y: number): { id: ProviderType; el: HTMLElement } 
 // Check if cursor is in the active interactive area (pill, card, or union bridge)
 function pointerInHot(x: number, y: number): boolean {
   if (!notchPillRef.value) return false;
+
+  // When folded, check wake zone near the right edge
+  if (isFolded.value) {
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+    const cy = H / 2;
+    return x >= W - 42 && Math.abs(y - cy) <= 65;
+  }
+
   const p = notchPillRef.value.getBoundingClientRect();
   if (inRect(x, y, p, 4)) return true;
 
@@ -151,12 +194,29 @@ function scheduleHide() {
 function handleMouseMove(e: MouseEvent) {
   if (isDragging) return;
 
+  if (isFolded.value) {
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+    const cy = H / 2;
+    // Wake up if cursor is near right screen edge around the rest pill
+    if (e.clientX >= W - 44 && Math.abs(e.clientY - cy) <= 75) {
+      unfold();
+    }
+    return;
+  }
+
   const hot = pointerInHot(e.clientX, e.clientY);
   if (hot) {
     if (hideTimer) {
       clearTimeout(hideTimer);
       hideTimer = null;
     }
+    if (foldTimer) {
+      clearTimeout(foldTimer);
+      foldTimer = null;
+    }
+    isHoveringNotch.value = true;
+
     const cell = getCellAt(e.clientX, e.clientY);
     if (cell) {
       const changed = activeHoverId.value !== cell.id;
@@ -167,15 +227,21 @@ function handleMouseMove(e: MouseEvent) {
         placeCard(cell.el);
       }
     }
-  } else if (activeHoverId.value) {
-    scheduleHide();
+  } else {
+    isHoveringNotch.value = false;
+    if (activeHoverId.value) {
+      scheduleHide();
+    }
+    scheduleFold();
   }
 }
 
 function handleMouseOut(e: MouseEvent) {
   // Cursor left the window entirely
-  if (!e.relatedTarget && activeHoverId.value) {
-    scheduleHide();
+  if (!e.relatedTarget) {
+    isHoveringNotch.value = false;
+    if (activeHoverId.value) scheduleHide();
+    scheduleFold();
   }
 }
 
@@ -276,6 +342,7 @@ function handleDragMouseDown(e: MouseEvent) {
   dragStartX = e.screenX;
   dragStartY = e.screenY;
   activeHoverId.value = null; // hide card during move
+  if (foldTimer) clearTimeout(foldTimer);
   invoke('start_drag_move').catch(() => {});
 
   const onMouseMoveDrag = (ev: MouseEvent) => {
@@ -290,6 +357,7 @@ function handleDragMouseDown(e: MouseEvent) {
     invoke('end_drag_move').catch(() => {});
     window.removeEventListener('mousemove', onMouseMoveDrag);
     window.removeEventListener('mouseup', onMouseUpDrag);
+    scheduleFold();
   };
 
   window.addEventListener('mousemove', onMouseMoveDrag);
@@ -299,6 +367,7 @@ function handleDragMouseDown(e: MouseEvent) {
 // Open settings window
 function openSettings() {
   activeHoverId.value = null;
+  scheduleFold();
   invoke('show_main_window').catch(() => {});
 }
 
@@ -331,6 +400,14 @@ onMounted(async () => {
       providerTabs.value = loadProviderTabs();
     } else if (e.key === CACHE_KEY) {
       allCachedData.value = loadCachedData();
+    } else if (e.key === 'arkbar_notch_mode') {
+      const mode = (localStorage.getItem('arkbar_notch_mode') as any) || 'hover';
+      notchMode.value = mode;
+      if (mode === 'always') {
+        isFolded.value = false;
+      } else if (mode === 'hover') {
+        isFolded.value = true;
+      }
     }
   });
 });
@@ -339,18 +416,42 @@ onUnmounted(() => {
   window.removeEventListener('mousemove', handleMouseMove);
   window.removeEventListener('mouseout', handleMouseOut);
   if (unlistenUsage) unlistenUsage();
+  if (foldTimer) clearTimeout(foldTimer);
+  if (hideTimer) clearTimeout(hideTimer);
 });
 </script>
 
 <template>
-  <div class="fixed inset-0 pointer-events-none select-none flex items-center justify-end overflow-visible">
+  <div
+    v-if="notchMode !== 'hidden'"
+    class="fixed inset-0 pointer-events-none select-none flex items-center justify-end overflow-visible"
+  >
     <!-- ============================================================ -->
     <!-- UNIFIED INTERACTIVE ZONE (Right Screen Edge)                 -->
     <!-- ============================================================ -->
-    <div class="relative pointer-events-auto flex items-center pr-0">
-      <!-- 1. SPEECH BUBBLE POPOVER CARD & ORGANIC TAIL (Codenotch Style) -->
+    <div
+      class="relative pointer-events-auto flex items-center pr-0"
+      :class="{ 'is-folded-notch': isFolded }"
+      @mouseenter="unfold"
+    >
+      <!-- 1. WAKE ZONE: Trigger area when folded to wake up on approach -->
+      <div
+        v-if="isFolded"
+        class="absolute right-0 top-1/2 -translate-y-1/2 w-[42px] h-[130px] pointer-events-auto cursor-pointer z-50"
+        @mouseenter="unfold"
+        @mousemove="unfold"
+      />
+
+      <!-- 2. REST PILL (Codenotch #rest: Sleek 10px x 79px capsule hugging edge when folded) -->
+      <div
+        class="rest-pill"
+        :class="{ 'opacity-100': isFolded, 'opacity-0 pointer-events-none': !isFolded }"
+        @mouseenter="unfold"
+      />
+
+      <!-- 3. SPEECH BUBBLE POPOVER CARD & ORGANIC TAIL (Codenotch Style) -->
       <Transition name="codenotch-pop">
-        <div v-if="activeHoverId" class="contents">
+        <div v-if="!isFolded && activeHoverId" class="contents">
           <!-- Organic Curved Wedge Tail (clip-path from Codenotch spec) -->
           <div
             class="absolute z-50 pointer-events-none w-[32px] h-[36px] transition-[top] duration-150 ease-out"
@@ -487,22 +588,23 @@ onUnmounted(() => {
         </div>
       </Transition>
 
-      <!-- 2. THE SCREEN EDGE NOTCH PILL (Flush right, concave flares top/bottom) -->
+      <!-- 4. THE SCREEN EDGE NOTCH PILL (Expands on hover, clips down to rest pill when idle) -->
       <div
         ref="notchPillRef"
-        class="relative z-40 w-[70px] bg-[#16171b]/95 border-l border-t border-b border-white/10 rounded-l-[28px] py-4 flex flex-col items-center gap-4 shadow-[-12px_0_32px_rgba(0,0,0,0.55)] backdrop-blur-2xl transition-all duration-300"
+        class="notch-pill relative z-40 w-[70px] bg-[#16171b]/95 border-l border-t border-b border-white/10 rounded-l-[28px] py-4 flex flex-col items-center gap-4 shadow-[-12px_0_32px_rgba(0,0,0,0.55)] backdrop-blur-2xl"
+        :class="{ 'is-folded': isFolded }"
       >
         <!-- Top Concave Flare connecting smoothly to Screen Edge -->
         <svg
-          class="absolute -top-6 right-0 w-6 h-6 text-[#16171b]/95 fill-current pointer-events-none"
+          class="notch-flare absolute -top-6 right-0 w-6 h-6 text-[#16171b]/95 fill-current pointer-events-none"
           viewBox="0 0 24 24"
         >
           <path d="M24,24 C10.745,24 0,13.255 0,0 L24,0 Z" />
         </svg>
 
-        <!-- Top Drag Handle -->
+        <!-- Top Drag Handle (6 dots grip icon matching user photo) -->
         <div
-          class="cursor-grab active:cursor-grabbing text-neutral-500 hover:text-neutral-300 py-0.5 transition-colors"
+          class="notch-item cursor-grab active:cursor-grabbing text-neutral-500 hover:text-neutral-300 py-0.5 transition-colors"
           title="按住拖动调整刘海位置"
           @mousedown="handleDragMouseDown"
         >
@@ -515,7 +617,7 @@ onUnmounted(() => {
             v-for="item in notchProviders"
             :key="item.id"
             :data-provider="item.id"
-            class="provider-cell relative flex flex-col items-center cursor-pointer group/ring transition-transform duration-150"
+            class="provider-cell notch-item relative flex flex-col items-center cursor-pointer group/ring transition-transform duration-150"
             :class="activeHoverId === item.id ? 'scale-105' : 'hover:scale-105'"
           >
             <!-- Circular Ring Gauge (Diameter 44px, matching Codenotch) -->
@@ -551,7 +653,7 @@ onUnmounted(() => {
               </div>
             </div>
 
-            <!-- Percentage Text Below Ring (e.g. 68%, 64%, or $12.5) -->
+            <!-- Percentage Text Below Ring (e.g. 0%, 22%, 64%) -->
             <div class="text-[13px] font-bold text-white tracking-tight text-center mt-1 leading-none drop-shadow-sm">
               {{ getProviderBadgeText(item.id, item.notch_metric) }}
             </div>
@@ -561,7 +663,7 @@ onUnmounted(() => {
         <!-- Bottom Settings Button (Gear icon to open Settings window) -->
         <button
           @click="openSettings"
-          class="mt-1 p-1.5 rounded-full text-neutral-400 hover:text-white hover:bg-white/10 transition-colors"
+          class="notch-item mt-1 p-1.5 rounded-full text-neutral-400 hover:text-white hover:bg-white/10 transition-colors"
           title="偏好设置"
         >
           <Settings class="w-4 h-4" />
@@ -569,7 +671,7 @@ onUnmounted(() => {
 
         <!-- Bottom Concave Flare connecting smoothly to Screen Edge -->
         <svg
-          class="absolute -bottom-6 right-0 w-6 h-6 text-[#16171b]/95 fill-current pointer-events-none"
+          class="notch-flare absolute -bottom-6 right-0 w-6 h-6 text-[#16171b]/95 fill-current pointer-events-none"
           viewBox="0 0 24 24"
         >
           <path d="M24,0 C10.745,0 0,10.745 0,24 L24,24 Z" />
@@ -580,10 +682,71 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* ===================================================================== */
+/* 1. REST PILL (Codenotch #rest: Slim 10px capsule at right screen edge) */
+/* ===================================================================== */
+.rest-pill {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 10px;
+  height: 79px;
+  background-color: #16171b;
+  border-left: 1px solid rgba(255, 255, 255, 0.22);
+  border-top: 1px solid rgba(255, 255, 255, 0.22);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.22);
+  border-right: none;
+  border-radius: 6px 0 0 6px;
+  box-shadow: -4px 0 14px rgba(0, 0, 0, 0.5);
+  pointer-events: auto;
+  cursor: pointer;
+  z-index: 45;
+  transition: opacity 0.2s ease 0.16s;
+}
+
+/* ===================================================================== */
+/* 2. NOTCH PILL CLIP-PATH MORPHING (Codenotch Smooth Spring Expansion)  */
+/* ===================================================================== */
+.notch-pill {
+  --clip-open: inset(-30px -1px -30px -1px round 0);
+  --clip-rest: inset(calc(50% - 39.5px) 0 calc(50% - 39.5px) calc(100% - 10px) round 6px 0 0 6px);
+  clip-path: var(--clip-open);
+  transition: clip-path 0.36s cubic-bezier(0.32, 0.72, 0.24, 1);
+}
+
+.notch-pill.is-folded {
+  clip-path: var(--clip-rest);
+  pointer-events: none;
+}
+
+/* Items inside notch slide right and fade out when folding */
+.notch-item {
+  transition: opacity 0.18s ease, transform 0.3s cubic-bezier(0.32, 0.72, 0.24, 1);
+}
+
+.is-folded .notch-item {
+  opacity: 0;
+  transform: translateX(12px);
+  pointer-events: none;
+}
+
+/* Top & Bottom Concave Fillets */
+.notch-flare {
+  transition: opacity 0.2s ease;
+}
+
+.is-folded .notch-flare {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Gauge progress stroke animation */
 .gauge-ring {
   transition: stroke-dashoffset 0.6s cubic-bezier(0.34, 1.4, 0.64, 1);
 }
 
+/* Popover Speech-Bubble Spring Animation */
 .codenotch-pop-enter-active {
   transition: opacity 0.16s ease-out, transform 0.2s cubic-bezier(0.34, 1.4, 0.64, 1);
 }
