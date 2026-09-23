@@ -21,6 +21,7 @@ import {
   Power,
   RefreshCw,
   RotateCcw,
+  Check,
 } from 'lucide-vue-next';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart';
@@ -317,17 +318,40 @@ const alertReset = ref(true);
 const isCheckingUpdate = ref(false);
 const showUpdateModal = ref(false);
 const currentUpdateInfo = ref<UpdateInfo | null>(props.initialUpdateInfo || null);
+const updateCheckStatus = ref<'idle' | 'latest' | 'error'>('idle');
+const lastCheckedTime = ref<string>('');
+let statusResetTimer: any = null;
 
 async function checkForUpdate() {
+  if (isCheckingUpdate.value) return;
   isCheckingUpdate.value = true;
+  updateCheckStatus.value = 'idle';
+  if (statusResetTimer) clearTimeout(statusResetTimer);
+
   try {
-    const res = await invoke<UpdateInfo>('check_for_updates');
+    const res = await invoke<UpdateInfo>('check_for_updates', { force: true });
     currentUpdateInfo.value = res;
     emit('update-checked', res);
+
+    const now = new Date();
+    const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+    lastCheckedTime.value = timeStr;
+
     if (res.has_update) {
       showUpdateModal.value = true;
+      updateCheckStatus.value = 'idle';
+    } else {
+      updateCheckStatus.value = 'latest';
+      statusResetTimer = setTimeout(() => {
+        updateCheckStatus.value = 'idle';
+      }, 8000);
     }
-  } catch {
+  } catch (err) {
+    console.error('Check update failed:', err);
+    updateCheckStatus.value = 'error';
+    statusResetTimer = setTimeout(() => {
+      updateCheckStatus.value = 'idle';
+    }, 5000);
   } finally {
     isCheckingUpdate.value = false;
   }
@@ -883,16 +907,47 @@ async function toggleNotchWindow() {
           <!-- 检查更新 -->
           <div class="bg-[#202126] border border-white/5 rounded-xl p-4 flex items-center justify-between">
             <div>
-              <h3 class="text-sm font-semibold text-white">检查新版本</h3>
-              <p class="text-xs text-neutral-400 mt-0.5">当前版本: v{{ appVersion }}</p>
+              <div class="flex items-center gap-2">
+                <h3 class="text-sm font-semibold text-white">检查新版本</h3>
+                <!-- Status badge: 已是最新版本 -->
+                <span
+                  v-if="updateCheckStatus === 'latest'"
+                  class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-[#00FF88]/15 text-[#00FF88] border border-[#00FF88]/25 animate-fadeIn"
+                >
+                  <Check class="w-3 h-3" />
+                  当前已是最新版本
+                </span>
+                <!-- Status badge: 检查失败 -->
+                <span
+                  v-else-if="updateCheckStatus === 'error'"
+                  class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-rose-500/15 text-rose-400 border border-rose-500/25 animate-fadeIn"
+                >
+                  检查失败，请检查网络
+                </span>
+              </div>
+              <p class="text-xs text-neutral-400 mt-0.5">
+                当前版本: v{{ appVersion }}
+                <span v-if="lastCheckedTime" class="text-neutral-500 ml-1.5">
+                  · 刚刚检查于 {{ lastCheckedTime }}
+                </span>
+              </p>
             </div>
             <button
               @click="checkForUpdate"
               :disabled="isCheckingUpdate"
-              class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors"
+              class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer"
+              :class="[
+                updateCheckStatus === 'latest'
+                  ? 'bg-[#00FF88]/15 text-[#00FF88] border border-[#00FF88]/30 hover:bg-[#00FF88]/25'
+                  : 'bg-white/10 hover:bg-white/20 text-white',
+                isCheckingUpdate ? 'opacity-70 cursor-not-allowed' : ''
+              ]"
             >
-              <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': isCheckingUpdate }" />
-              <span>{{ isCheckingUpdate ? '检测中...' : '在线检查更新' }}</span>
+              <Check v-if="updateCheckStatus === 'latest' && !isCheckingUpdate" class="w-3.5 h-3.5 text-[#00FF88]" />
+              <RefreshCw v-else class="w-3.5 h-3.5" :class="{ 'animate-spin': isCheckingUpdate }" />
+              <span>
+                {{ isCheckingUpdate ? '检测中...' : updateCheckStatus === 'latest' ? '已是最新版' : updateCheckStatus === 'error' ? '重试检查' : '在线检查更新' }}
+              </span>
             </button>
           </div>
         </div>
