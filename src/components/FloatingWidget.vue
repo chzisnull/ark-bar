@@ -15,14 +15,15 @@ interface ProviderTabItem {
   name: string;
   visible: boolean;
   notch_metric?: NotchMetric;
+  model_filter?: string;
 }
 
 const DEFAULT_TABS: ProviderTabItem[] = [
-  { id: 'antigravity', name: 'Antigravity', visible: true, notch_metric: 'session' },
-  { id: 'grok', name: 'Grok', visible: true, notch_metric: 'session' },
-  { id: 'volcengine', name: '火山方舟', visible: true, notch_metric: 'session' },
-  { id: 'codex', name: 'Codex', visible: true, notch_metric: 'session' },
-  { id: 'teamo', name: 'Teamo', visible: true, notch_metric: 'balance' },
+  { id: 'antigravity', name: 'Antigravity', visible: true, notch_metric: 'session', model_filter: 'gemini' },
+  { id: 'grok', name: 'Grok', visible: true, notch_metric: 'session', model_filter: 'all' },
+  { id: 'volcengine', name: '火山方舟', visible: true, notch_metric: 'session', model_filter: 'all' },
+  { id: 'codex', name: 'Codex', visible: true, notch_metric: 'session', model_filter: 'all' },
+  { id: 'teamo', name: 'Teamo', visible: true, notch_metric: 'balance', model_filter: 'all' },
 ];
 
 function loadProviderTabs(): ProviderTabItem[] {
@@ -47,6 +48,7 @@ function loadProviderTabs(): ProviderTabItem[] {
               name: item.name || nameMap[item.id as ProviderType],
               visible: item.visible !== false,
               notch_metric: item.notch_metric || 'session',
+              model_filter: item.model_filter || (item.id === 'antigravity' ? 'gemini' : 'all'),
             });
           }
         }
@@ -57,6 +59,7 @@ function loadProviderTabs(): ProviderTabItem[] {
               name: nameMap[id],
               visible: true,
               notch_metric: 'session',
+              model_filter: id === 'antigravity' ? 'gemini' : 'all',
             });
           }
         }
@@ -111,6 +114,7 @@ const notchProviders = computed(() => {
         id: tab.id,
         name: tab.name,
         notch_metric: tab.notch_metric || 'session',
+        model_filter: tab.model_filter || (tab.id === 'antigravity' ? 'gemini' : 'all'),
         data,
       };
     });
@@ -134,6 +138,42 @@ const activeHoverData = computed<ProviderUsageData | null>(() => {
   if (!activeHoverId.value) return null;
   return allCachedData.value[activeHoverId.value] || null;
 });
+
+const activeHoverTab = computed(() => {
+  if (!activeHoverId.value) return null;
+  return providerTabs.value.find((t) => t.id === activeHoverId.value) || null;
+});
+
+// Filter groups based on the active provider's model_filter setting
+const activeHoverGroups = computed(() => {
+  const data = activeHoverData.value;
+  if (!data || !data.groups) return [];
+  const filter = activeHoverTab.value?.model_filter || 'all';
+  if (filter === 'all') return data.groups;
+
+  return data.groups.filter((g) => {
+    const name = (g.group_name || '').toLowerCase();
+    if (filter === 'gemini') {
+      return name.includes('gemini');
+    }
+    if (filter === 'claude') {
+      return name.includes('claude') || name.includes('gpt');
+    }
+    return true;
+  });
+});
+
+// When groups change (e.g. filtered to 1 group), re-center card and tail
+watch(activeHoverGroups, () => {
+  if (activeHoverId.value && notchPillRef.value) {
+    nextTick(() => {
+      const el = notchPillRef.value?.querySelector<HTMLElement>(`[data-provider="${activeHoverId.value}"]`);
+      if (el) {
+        placeCard(el);
+      }
+    });
+  }
+}, { deep: true });
 
 // Report hot rectangles to Rust watchdog
 function reportHot() {
@@ -343,28 +383,48 @@ function handleDomMouseMove(e: MouseEvent) {
   handlePointerAt(e.clientX, e.clientY);
 }
 
-// Compute percentage for each provider
-function getProviderDisplayPercent(id: ProviderType, metric?: NotchMetric): number {
+// Compute percentage for each provider, respecting metric and modelFilter
+function getProviderDisplayPercent(id: ProviderType, metric?: NotchMetric, modelFilter?: string): number {
   const data = allCachedData.value[id];
   if (!data) return 0;
 
+  let groups = data.groups || [];
+  if (modelFilter && modelFilter !== 'all') {
+    const f = modelFilter.toLowerCase();
+    const filtered = groups.filter((g) => {
+      const name = (g.group_name || '').toLowerCase();
+      if (f === 'gemini') return name.includes('gemini');
+      if (f === 'claude') return name.includes('claude') || name.includes('gpt');
+      return true;
+    });
+    if (filtered.length > 0) {
+      groups = filtered;
+    }
+  }
+
   if (metric === 'weekly') {
-    for (const g of data.groups || []) {
+    for (const g of groups) {
       const p = g.periods.find((x) => x.label.toLowerCase().includes('week'));
       if (p) return Math.round(p.used_percent);
     }
   } else if (metric === 'monthly') {
-    for (const g of data.groups || []) {
+    for (const g of groups) {
       const p = g.periods.find((x) => x.label.toLowerCase().includes('month'));
       if (p) return Math.round(p.used_percent);
     }
   }
 
-  if (data.primary_session_percent != null) {
+  // Session / 5h metric
+  for (const g of groups) {
+    const p = g.periods.find((x) => x.label.toLowerCase().includes('session') || x.label.toLowerCase().includes('5h'));
+    if (p) return Math.round(p.used_percent);
+  }
+
+  if ((!modelFilter || modelFilter === 'all') && data.primary_session_percent != null) {
     return Math.round(data.primary_session_percent);
   }
 
-  for (const g of data.groups || []) {
+  for (const g of groups) {
     if (g.periods.length > 0) {
       return Math.round(g.periods[0].used_percent);
     }
@@ -374,7 +434,7 @@ function getProviderDisplayPercent(id: ProviderType, metric?: NotchMetric): numb
 }
 
 // Percentage badge text shown under ring
-function getProviderBadgeText(id: ProviderType, metric?: NotchMetric): string {
+function getProviderBadgeText(id: ProviderType, metric?: NotchMetric, modelFilter?: string): string {
   const data = allCachedData.value[id];
   if (!data || !data.is_connected) return '--';
 
@@ -383,7 +443,7 @@ function getProviderBadgeText(id: ProviderType, metric?: NotchMetric): string {
     return val >= 100 ? `$${Math.round(val)}` : `$${val.toFixed(1)}`;
   }
 
-  const p = getProviderDisplayPercent(id, metric);
+  const p = getProviderDisplayPercent(id, metric, modelFilter);
   return `${p}%`;
 }
 
@@ -652,6 +712,9 @@ onUnmounted(() => {
                 </h3>
                 <span class="text-[10px] text-[#8e8e93] leading-tight mt-0.5">
                   {{ activeHoverData?.is_connected ? '运行正常' : '未连接' }}
+                  <span v-if="activeHoverTab?.model_filter && activeHoverTab.model_filter !== 'all'" class="text-[#00FF88] ml-1 font-medium">
+                    · {{ activeHoverTab.model_filter === 'gemini' ? 'Gemini 模型' : 'Claude 模型' }}
+                  </span>
                 </span>
               </div>
             </div>
@@ -696,9 +759,9 @@ onUnmounted(() => {
             </div>
 
             <!-- Limit Groups (Gemini Models, Claude Models, Grok Build, etc.) -->
-            <template v-if="activeHoverData && activeHoverData.groups && activeHoverData.groups.length > 0">
+            <template v-if="activeHoverData && activeHoverGroups.length > 0">
               <div
-                v-for="(group, gIdx) in activeHoverData.groups"
+                v-for="(group, gIdx) in activeHoverGroups"
                 :key="gIdx"
                 class="bg-white/[0.03] rounded-xl p-3 border border-white/[0.07] space-y-2.5"
               >
@@ -742,7 +805,10 @@ onUnmounted(() => {
               </div>
             </template>
 
-            <!-- Loading / Syncing placeholder if no data yet -->
+            <!-- Loading / Syncing / Filter empty placeholder -->
+            <div v-else-if="activeHoverData && activeHoverData.groups && activeHoverData.groups.length > 0" class="py-6 text-center text-xs text-[#8e8e93]">
+              <span>所选模型分类暂无数据</span>
+            </div>
             <div v-else class="py-6 text-center text-xs text-[#8e8e93] flex flex-col items-center gap-2">
               <RotateCw class="w-4 h-4 animate-spin text-[#8e8e93]" />
               <span>正在同步用量读数…</span>
@@ -862,9 +928,9 @@ onUnmounted(() => {
                 stroke-width="3.5"
                 stroke-linecap="round"
                 class="gauge-ring"
-                :stroke="getRingStrokeColor(getProviderDisplayPercent(item.id, item.notch_metric))"
+                :stroke="getRingStrokeColor(getProviderDisplayPercent(item.id, item.notch_metric, item.model_filter))"
                 :stroke-dasharray="CIRCUMFERENCE"
-                :stroke-dashoffset="getRingDashOffset(getProviderDisplayPercent(item.id, item.notch_metric))"
+                :stroke-dashoffset="getRingDashOffset(getProviderDisplayPercent(item.id, item.notch_metric, item.model_filter))"
               />
             </svg>
 
@@ -876,7 +942,7 @@ onUnmounted(() => {
 
           <!-- Percentage Text Below Ring (Tabular numerals, Codenotch style) -->
           <div class="pct">
-            {{ getProviderBadgeText(item.id, item.notch_metric) }}
+            {{ getProviderBadgeText(item.id, item.notch_metric, item.model_filter) }}
           </div>
         </div>
       </div>

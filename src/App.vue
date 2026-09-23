@@ -23,11 +23,11 @@ const loadingMap = ref<Record<ProviderType, boolean>>({
 });
 
 const DEFAULT_PROVIDER_TABS: ProviderTabConfig[] = [
-  { id: 'antigravity', name: 'Antigravity', visible: true, notch_metric: 'session' },
-  { id: 'grok', name: 'Grok', visible: true, notch_metric: 'session' },
-  { id: 'volcengine', name: '火山方舟', visible: true, notch_metric: 'session' },
-  { id: 'codex', name: 'Codex', visible: true, notch_metric: 'session' },
-  { id: 'teamo', name: 'Teamo', visible: true, notch_metric: 'balance' },
+  { id: 'antigravity', name: 'Antigravity', visible: true, notch_metric: 'session', model_filter: 'gemini' },
+  { id: 'grok', name: 'Grok', visible: true, notch_metric: 'session', model_filter: 'all' },
+  { id: 'volcengine', name: '火山方舟', visible: true, notch_metric: 'session', model_filter: 'all' },
+  { id: 'codex', name: 'Codex', visible: true, notch_metric: 'session', model_filter: 'all' },
+  { id: 'teamo', name: 'Teamo', visible: true, notch_metric: 'balance', model_filter: 'all' },
 ];
 
 function loadProviderTabsConfig(): ProviderTabConfig[] {
@@ -66,7 +66,7 @@ function loadProviderTabsConfig(): ProviderTabConfig[] {
           name: nameMap[id],
           visible: true,
           notch_metric: 'session',
-          model_filter: 'all',
+          model_filter: id === 'antigravity' ? 'gemini' : 'all',
         });
       }
     }
