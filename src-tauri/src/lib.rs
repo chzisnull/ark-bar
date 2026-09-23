@@ -11,6 +11,7 @@ mod provider_teamo;
 mod token_store;
 mod provider_manager;
 mod usage_cache;
+mod notch_monitor;
 pub mod token_stats;
 
 use tauri::Manager;
@@ -70,6 +71,9 @@ pub fn run() {
             // the popover window is hidden).
             background::spawn(app.handle().clone());
 
+            // Native cursor watchdog monitor for Notch hover expansion and click-through
+            notch_monitor::start_monitor(app.handle().clone());
+
             // 全局快捷键 ⌘/Ctrl+Shift+A 呼出主面板。注册失败（如与其他应用
             // 冲突）只降级不崩溃：悬浮窗右键菜单仍是兜底入口。
             #[cfg(desktop)]
@@ -124,6 +128,7 @@ pub fn run() {
             tray::exit_app,
             tray::set_float_window_size,
             tray::set_main_window_size,
+            notch_monitor::set_hot,
         ])
         .run(tauri::generate_context!())
         .expect("运行 ArkBar 应用时出错");

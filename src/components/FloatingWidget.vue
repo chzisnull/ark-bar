@@ -4,10 +4,11 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { ProviderType, ProviderUsageData, NotchMetric } from '../types';
 import ProviderIcon from './ProviderIcon.vue';
-import { Settings, GripVertical, RotateCw } from 'lucide-vue-next';
+import { RotateCw } from 'lucide-vue-next';
 
 const CACHE_KEY = 'arkbar_cached_providers_data';
 const FOLD_GRACE = 450; // Grace period before folding back to rest pill (Codenotch spec: 450ms)
+const WAKE_BAND = 40;   // Wake zone width extending into the screen
 
 interface ProviderTabItem {
   id: ProviderType;
@@ -62,8 +63,12 @@ const notchMode = ref<'hover' | 'always' | 'hidden'>(
 
 // Folded state: default true if in hover mode (rest pill shown, expands on mouseover)
 const isFolded = ref<boolean>(notchMode.value === 'hover');
-const isHoveringNotch = ref<boolean>(false);
 let foldTimer: any = null;
+let hideTimer: any = null;
+let pointerIn = false;
+let isDragging = false;
+let dragStartX = 0;
+let dragStartY = 0;
 
 // Visible active providers in the Notch
 const notchProviders = computed(() => {
@@ -88,13 +93,64 @@ const cardRef = ref<HTMLElement | null>(null);
 const activeHoverId = ref<ProviderType | null>(null);
 const cardTop = ref(40);
 const tailTop = ref(60);
-let hideTimer: any = null;
+
+// Handles hover states
+const isHoveringMove = ref(false);
+const isHoveringOrb = ref(false);
 
 // Currently active popover data
 const activeHoverData = computed<ProviderUsageData | null>(() => {
   if (!activeHoverId.value) return null;
   return allCachedData.value[activeHoverId.value] || null;
 });
+
+// Report hot rectangles to Rust watchdog
+function reportHot() {
+  if (notchMode.value === 'hidden') {
+    invoke('set_hot', { rects: [], expanded: false }).catch(() => {});
+    return;
+  }
+
+  const k = window.devicePixelRatio || 1;
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+
+  if (isFolded.value) {
+    const pillH = 79;
+    const r = [
+      (W - 10 - WAKE_BAND) * k,
+      (H / 2 - pillH / 2 - 20) * k,
+      (10 + WAKE_BAND + 15) * k,
+      (pillH + 40) * k,
+    ];
+    invoke('set_hot', { rects: [r], expanded: false }).catch(() => {});
+    return;
+  }
+
+  const rects: number[][] = [];
+  if (notchPillRef.value) {
+    const pr = notchPillRef.value.getBoundingClientRect();
+    // Notch pill plus fillets and handles buffer
+    rects.push([
+      (pr.left - 10) * k,
+      (pr.top - 50) * k,
+      (pr.width + 20) * k,
+      (pr.height + 100) * k,
+    ]);
+  }
+
+  if (activeHoverId.value && cardRef.value) {
+    const cr = cardRef.value.getBoundingClientRect();
+    rects.push([
+      (cr.left - 10) * k,
+      (cr.top - 10) * k,
+      (cr.width + 50) * k, // bridge gap between card and pill
+      (cr.height + 20) * k,
+    ]);
+  }
+
+  invoke('set_hot', { rects, expanded: true }).catch(() => {});
+}
 
 // Unfold the notch smoothly
 function unfold() {
@@ -103,20 +159,53 @@ function unfold() {
     clearTimeout(foldTimer);
     foldTimer = null;
   }
-  isFolded.value = false;
+  if (isFolded.value) {
+    isFolded.value = false;
+    nextTick(() => reportHot());
+  }
 }
 
 // Schedule fold back to resting pill
 function scheduleFold() {
   if (notchMode.value === 'always' || notchMode.value === 'hidden') return;
   if (foldTimer) clearTimeout(foldTimer);
-  if (isDragging || isHoveringNotch.value || activeHoverId.value) return;
+  if (isDragging || pointerIn) return;
 
   foldTimer = setTimeout(() => {
-    if (!isHoveringNotch.value && !activeHoverId.value && !isDragging) {
+    if (!pointerIn && !isDragging) {
       isFolded.value = true;
+      activeHoverId.value = null;
+      isHoveringMove.value = false;
+      isHoveringOrb.value = false;
+      nextTick(() => reportHot());
     }
   }, FOLD_GRACE);
+}
+
+// Position card vertically centered on cell, with curved tail pointing at ring center
+function placeCard(targetEl: HTMLElement) {
+  const cr = targetEl.getBoundingClientRect();
+  const cy = cr.top + cr.height / 2;
+  const H = window.innerHeight;
+  const ch = cardRef.value?.offsetHeight || 260;
+
+  let top = Math.round(cy - ch / 2);
+  top = Math.max(12, Math.min(top, H - ch - 12));
+  cardTop.value = top;
+
+  const ry = cy; // Ring vertical center
+  const th = 36;
+  const ty = Math.max(top + 16 + th / 2, Math.min(top + ch - 16 - th / 2, ry));
+  tailTop.value = Math.round(ty - th / 2);
+  reportHot();
+}
+
+function scheduleHideCard() {
+  if (hideTimer) clearTimeout(hideTimer);
+  hideTimer = setTimeout(() => {
+    activeHoverId.value = null;
+    reportHot();
+  }, 180);
 }
 
 // Helper for rectangle intersection test with optional padding
@@ -138,60 +227,8 @@ function getCellAt(x: number, y: number): { id: ProviderType; el: HTMLElement } 
   return null;
 }
 
-// Check if cursor is in the active interactive area (pill, card, or union bridge)
-function pointerInHot(x: number, y: number): boolean {
-  if (!notchPillRef.value) return false;
-
-  // When folded, check wake zone near the right edge
-  if (isFolded.value) {
-    const W = window.innerWidth;
-    const H = window.innerHeight;
-    const cy = H / 2;
-    return x >= W - 42 && Math.abs(y - cy) <= 65;
-  }
-
-  const p = notchPillRef.value.getBoundingClientRect();
-  if (inRect(x, y, p, 4)) return true;
-
-  if (!activeHoverId.value || !cardRef.value) return false;
-  const c = cardRef.value.getBoundingClientRect();
-  if (inRect(x, y, c, 4)) return true;
-
-  // Union bounding box between card and pill to eliminate dead gap
-  const u = {
-    left: Math.min(p.left, c.left),
-    top: Math.min(p.top, c.top),
-    right: Math.max(p.right, c.right),
-    bottom: Math.max(p.bottom, c.bottom),
-  };
-  return inRect(x, y, u as DOMRect, 0);
-}
-
-// Position card vertically centered on cell, with curved tail pointing at ring center
-function placeCard(targetEl: HTMLElement) {
-  const cr = targetEl.getBoundingClientRect();
-  const cy = cr.top + cr.height / 2;
-  const H = window.innerHeight;
-  const ch = cardRef.value?.offsetHeight || 240;
-
-  let top = Math.round(cy - ch / 2);
-  top = Math.max(12, Math.min(top, H - ch - 12));
-  cardTop.value = top;
-
-  const ry = cy; // Ring vertical center
-  const th = 36;
-  const ty = Math.max(top + 16 + th / 2, Math.min(top + ch - 16 - th / 2, ry));
-  tailTop.value = Math.round(ty - th / 2);
-}
-
-function scheduleHide() {
-  if (hideTimer) clearTimeout(hideTimer);
-  hideTimer = setTimeout(() => {
-    activeHoverId.value = null;
-  }, 180);
-}
-
-function handleMouseMove(e: MouseEvent) {
+// Core unified pointer movement handler (called by DOM mousemove AND native Rust watchdog notch_cursor)
+function handlePointerAt(clientX: number, clientY: number) {
   if (isDragging) return;
 
   if (isFolded.value) {
@@ -199,50 +236,71 @@ function handleMouseMove(e: MouseEvent) {
     const H = window.innerHeight;
     const cy = H / 2;
     // Wake up if cursor is near right screen edge around the rest pill
-    if (e.clientX >= W - 44 && Math.abs(e.clientY - cy) <= 75) {
+    if (clientX >= W - 10 - WAKE_BAND && Math.abs(clientY - cy) <= 55) {
       unfold();
     }
     return;
   }
 
-  const hot = pointerInHot(e.clientX, e.clientY);
-  if (hot) {
+  // Check handles hover
+  if (notchPillRef.value) {
+    const pr = notchPillRef.value.getBoundingClientRect();
+    const R = 38.7;
+    // Top handle center: [pr.right - R, pr.top - R]
+    const topHx = pr.right - R;
+    const topHy = pr.top - R;
+    const distTop = Math.hypot(clientX - topHx, clientY - topHy);
+    isHoveringMove.value = distTop <= 32;
+
+    // Bottom handle center: [pr.right - R, pr.bottom + R]
+    const botHx = pr.right - R;
+    const botHy = pr.bottom + R;
+    const distBot = Math.hypot(clientX - botHx, clientY - botHy);
+    isHoveringOrb.value = distBot <= 32;
+
+    if (isHoveringMove.value || isHoveringOrb.value) {
+      if (activeHoverId.value) scheduleHideCard();
+      return;
+    }
+  }
+
+  // Check card or cell hover
+  const cell = getCellAt(clientX, clientY);
+  if (cell) {
     if (hideTimer) {
       clearTimeout(hideTimer);
       hideTimer = null;
     }
-    if (foldTimer) {
-      clearTimeout(foldTimer);
-      foldTimer = null;
+    const changed = activeHoverId.value !== cell.id;
+    activeHoverId.value = cell.id;
+    if (changed) {
+      nextTick(() => placeCard(cell.el));
+    } else {
+      placeCard(cell.el);
     }
-    isHoveringNotch.value = true;
+    return;
+  }
 
-    const cell = getCellAt(e.clientX, e.clientY);
-    if (cell) {
-      const changed = activeHoverId.value !== cell.id;
-      activeHoverId.value = cell.id;
-      if (changed) {
-        nextTick(() => placeCard(cell.el));
-      } else {
-        placeCard(cell.el);
+  // Check if pointer is inside card
+  if (activeHoverId.value && cardRef.value) {
+    const cr = cardRef.value.getBoundingClientRect();
+    if (inRect(clientX, clientY, cr, 8)) {
+      if (hideTimer) {
+        clearTimeout(hideTimer);
+        hideTimer = null;
       }
+      return;
     }
-  } else {
-    isHoveringNotch.value = false;
-    if (activeHoverId.value) {
-      scheduleHide();
-    }
-    scheduleFold();
+  }
+
+  // If outside cells and card, schedule card hide
+  if (activeHoverId.value) {
+    scheduleHideCard();
   }
 }
 
-function handleMouseOut(e: MouseEvent) {
-  // Cursor left the window entirely
-  if (!e.relatedTarget) {
-    isHoveringNotch.value = false;
-    if (activeHoverId.value) scheduleHide();
-    scheduleFold();
-  }
+function handleDomMouseMove(e: MouseEvent) {
+  handlePointerAt(e.clientX, e.clientY);
 }
 
 // Compute percentage for each provider
@@ -289,11 +347,11 @@ function getProviderBadgeText(id: ProviderType, metric?: NotchMetric): string {
   return `${p}%`;
 }
 
-// Stroke color based on percentage (matching Codenotch color grades)
+// Stroke color based on Codenotch palette (tone function: ample, watch, crit)
 function getRingStrokeColor(percent: number): string {
-  if (percent >= 85) return '#ef4444'; // Red
-  if (percent >= 60) return '#d97706'; // Rich warm gold / amber
-  return '#3b82f6'; // Clean blue
+  if (percent >= 80) return '#FF3F00'; // CRIT: Red
+  if (percent >= 50) return '#F2FF00'; // WATCH: Warm yellow
+  return '#00FF88';                   // AMPLE: Apple green
 }
 
 // SVG dash calculation (radius = 18, circumference = 2 * PI * 18 = 113.1)
@@ -332,16 +390,14 @@ function formatResetLabel(resetAt?: string): string {
   return `${date.getMonth() + 1}月${date.getDate()}日 重置`;
 }
 
-// Dragging window along edge
-let isDragging = false;
-let dragStartX = 0;
-let dragStartY = 0;
-
+// Dragging window along edge using Move Handle
 function handleDragMouseDown(e: MouseEvent) {
+  if (e.button !== 0) return;
+  e.stopPropagation();
   isDragging = true;
   dragStartX = e.screenX;
   dragStartY = e.screenY;
-  activeHoverId.value = null; // hide card during move
+  activeHoverId.value = null;
   if (foldTimer) clearTimeout(foldTimer);
   invoke('start_drag_move').catch(() => {});
 
@@ -364,20 +420,42 @@ function handleDragMouseDown(e: MouseEvent) {
   window.addEventListener('mouseup', onMouseUpDrag);
 }
 
-// Open settings window
-function openSettings() {
+// Open settings window from Settings Orb
+function openSettings(e?: MouseEvent) {
+  if (e) e.stopPropagation();
   activeHoverId.value = null;
   scheduleFold();
   invoke('show_main_window').catch(() => {});
 }
 
-// Sync updates
+// Event unlisteners
 let unlistenUsage: (() => void) | null = null;
+let unlistenPointer: (() => void) | null = null;
+let unlistenCursor: (() => void) | null = null;
 
 onMounted(async () => {
-  window.addEventListener('mousemove', handleMouseMove);
-  window.addEventListener('mouseout', handleMouseOut);
+  window.addEventListener('mousemove', handleDomMouseMove);
 
+  // 1. Listen to native watchdog pointer in/out events
+  unlistenPointer = await listen<boolean>('notch_pointer', (event) => {
+    const inside = event.payload === true;
+    pointerIn = inside;
+    if (inside) {
+      unfold();
+    } else {
+      scheduleFold();
+    }
+  });
+
+  // 2. Listen to native watchdog cursor position updates (logical coords)
+  unlistenCursor = await listen<[number, number]>('notch_cursor', (event) => {
+    if (event.payload) {
+      const [cx, cy] = event.payload;
+      handlePointerAt(cx, cy);
+    }
+  });
+
+  // 3. Load provider usage
   try {
     const list: ProviderUsageData[] = await invoke('get_all_providers_usage');
     if (Array.isArray(list)) {
@@ -398,6 +476,7 @@ onMounted(async () => {
   window.addEventListener('storage', (e) => {
     if (e.key === 'arkbar_provider_tabs') {
       providerTabs.value = loadProviderTabs();
+      nextTick(() => reportHot());
     } else if (e.key === CACHE_KEY) {
       allCachedData.value = loadCachedData();
     } else if (e.key === 'arkbar_notch_mode') {
@@ -408,14 +487,21 @@ onMounted(async () => {
       } else if (mode === 'hover') {
         isFolded.value = true;
       }
+      nextTick(() => reportHot());
     }
+  });
+
+  // Initial report of hot rectangles
+  nextTick(() => {
+    reportHot();
   });
 });
 
 onUnmounted(() => {
-  window.removeEventListener('mousemove', handleMouseMove);
-  window.removeEventListener('mouseout', handleMouseOut);
+  window.removeEventListener('mousemove', handleDomMouseMove);
   if (unlistenUsage) unlistenUsage();
+  if (unlistenPointer) unlistenPointer();
+  if (unlistenCursor) unlistenCursor();
   if (foldTimer) clearTimeout(foldTimer);
   if (hideTimer) clearTimeout(hideTimer);
 });
@@ -424,61 +510,48 @@ onUnmounted(() => {
 <template>
   <div
     v-if="notchMode !== 'hidden'"
-    class="fixed inset-0 pointer-events-none select-none flex items-center justify-end overflow-visible"
+    class="fixed inset-0 pointer-events-none select-none flex items-center justify-end overflow-visible font-sans"
   >
     <!-- ============================================================ -->
     <!-- UNIFIED INTERACTIVE ZONE (Right Screen Edge)                 -->
     <!-- ============================================================ -->
     <div
       class="relative pointer-events-auto flex items-center pr-0"
-      :class="{ 'is-folded-notch': isFolded }"
-      @mouseenter="unfold"
+      :class="{ 'is-folded-body': isFolded }"
     >
-      <!-- 1. WAKE ZONE: Trigger area when folded to wake up on approach -->
+      <!-- 1. REST PILL (Codenotch #rest: Sleek 10px x 79px capsule hugging edge when folded) -->
       <div
-        v-if="isFolded"
-        class="absolute right-0 top-1/2 -translate-y-1/2 w-[42px] h-[130px] pointer-events-auto cursor-pointer z-50"
-        @mouseenter="unfold"
-        @mousemove="unfold"
-      />
-
-      <!-- 2. REST PILL (Codenotch #rest: Sleek 10px x 79px capsule hugging edge when folded) -->
-      <div
-        class="rest-pill"
-        :class="{ 'opacity-100': isFolded, 'opacity-0 pointer-events-none': !isFolded }"
+        id="rest"
+        :class="{ 'is-active': isFolded }"
         @mouseenter="unfold"
       />
 
-      <!-- 3. SPEECH BUBBLE POPOVER CARD & ORGANIC TAIL (Codenotch Style) -->
+      <!-- 2. SPEECH BUBBLE POPOVER CARD & ORGANIC TAIL (Codenotch Style) -->
       <Transition name="codenotch-pop">
         <div v-if="!isFolded && activeHoverId" class="contents">
           <!-- Organic Curved Wedge Tail (clip-path from Codenotch spec) -->
           <div
-            class="absolute z-50 pointer-events-none w-[32px] h-[36px] transition-[top] duration-150 ease-out"
+            id="tail"
             :style="{
-              right: '69px',
               top: `${tailTop}px`,
-              backgroundColor: 'rgba(30, 31, 36, 0.98)',
-              clipPath: 'path(\'M0 0C0 9 18.56 13.68 32 18C18.56 22.32 0 27 0 36Z\')',
             }"
           />
 
           <!-- Speech Bubble Card Container -->
           <div
             ref="cardRef"
-            class="absolute z-50 pointer-events-auto w-[304px] bg-[#1e1f24]/98 text-neutral-100 rounded-[20px] p-4 shadow-[0_22px_45px_rgba(0,0,0,0.55)] border border-white/10 backdrop-blur-3xl overflow-hidden transition-[top] duration-150 ease-out"
+            id="card"
             :style="{
-              right: '98px',
               top: `${cardTop}px`,
             }"
           >
             <!-- Card Header: Logo + Title -->
-            <div class="flex items-center justify-between pb-3 border-b border-white/10">
+            <div class="flex items-center justify-between pb-3 border-b border-[#242424]">
               <div class="flex items-center gap-2.5">
-                <div class="w-6 h-6 rounded-lg bg-neutral-800 flex items-center justify-center p-1 text-white shadow-inner">
+                <div class="w-6 h-6 rounded-lg bg-[#1e1e1e] flex items-center justify-center p-1 text-white shadow-inner">
                   <ProviderIcon :name="activeHoverId" class="w-3.5 h-3.5" />
                 </div>
-                <h3 class="text-sm font-bold tracking-tight text-white">
+                <h3 class="text-sm font-bold tracking-tight text-[#ffffff]">
                   {{ activeHoverData?.provider_name || activeHoverId }} 用量
                 </h3>
               </div>
@@ -489,18 +562,18 @@ onUnmounted(() => {
               <!-- Teamo Balance Card -->
               <div
                 v-if="activeHoverId === 'teamo' && activeHoverData?.extension?.balance"
-                class="bg-white/[0.05] rounded-xl p-3 border border-white/5"
+                class="bg-white/[0.04] rounded-xl p-3 border border-[#242424]"
               >
-                <div class="flex items-center justify-between text-xs text-neutral-400 mb-1">
+                <div class="flex items-center justify-between text-xs text-[#808080] mb-1">
                   <span>账户余额</span>
                   <span>今日消费</span>
                 </div>
                 <div class="flex items-center justify-between">
-                  <span class="text-xl font-bold text-emerald-400">
+                  <span class="text-xl font-bold text-[#00FF88]">
                     ${{ activeHoverData.extension.balance.value.toFixed(2) }}
-                    <span class="text-xs font-normal text-neutral-400">{{ activeHoverData.extension.balance.currency }}</span>
+                    <span class="text-xs font-normal text-[#808080]">{{ activeHoverData.extension.balance.currency }}</span>
                   </span>
-                  <span class="text-sm font-semibold text-neutral-300">
+                  <span class="text-sm font-semibold text-[#e8e8ea]">
                     ${{ (activeHoverData.extension.today_cost?.value ?? 0).toFixed(2) }}
                   </span>
                 </div>
@@ -511,9 +584,9 @@ onUnmounted(() => {
                 <div
                   v-for="(group, gIdx) in activeHoverData.groups"
                   :key="gIdx"
-                  class="bg-white/[0.04] rounded-xl p-3 border border-white/5 space-y-3"
+                  class="bg-white/[0.03] rounded-xl p-3 border border-[#242424] space-y-3"
                 >
-                  <div v-if="group.group_name" class="text-xs font-semibold text-neutral-400">
+                  <div v-if="group.group_name" class="text-xs font-semibold text-[#808080]">
                     {{ group.group_name }}
                   </div>
 
@@ -524,16 +597,16 @@ onUnmounted(() => {
                   >
                     <!-- Label & Reset Time -->
                     <div class="flex items-center justify-between text-xs">
-                      <span class="font-medium text-neutral-300">
+                      <span class="font-medium text-[#e8e8ea]">
                         {{ period.name || period.label }}
                       </span>
-                      <span class="text-neutral-400 text-[11px]">
+                      <span class="text-[#808080] text-[11px]">
                         {{ formatResetLabel(period.reset_at) }}
                       </span>
                     </div>
 
                     <!-- Progress Bar -->
-                    <div class="h-1.5 w-full bg-neutral-700/60 rounded-full overflow-hidden">
+                    <div class="h-1.5 w-full bg-[#2d2d2d] rounded-full overflow-hidden">
                       <div
                         class="h-full rounded-full transition-all duration-700 ease-out"
                         :style="{
@@ -544,7 +617,7 @@ onUnmounted(() => {
                     </div>
 
                     <!-- Ratio Breakdown -->
-                    <div class="text-[11px] text-neutral-400 font-medium">
+                    <div class="text-[11px] text-[#808080] font-medium">
                       {{ Math.round(period.used_percent) }}% 已用 · {{ Math.max(0, 100 - Math.round(period.used_percent)) }}% 剩余
                     </div>
                   </div>
@@ -552,15 +625,15 @@ onUnmounted(() => {
               </template>
 
               <!-- Loading / Syncing placeholder if no data yet -->
-              <div v-else class="py-6 text-center text-xs text-neutral-400 flex flex-col items-center gap-2">
-                <RotateCw class="w-4 h-4 animate-spin text-neutral-500" />
+              <div v-else class="py-6 text-center text-xs text-[#808080] flex flex-col items-center gap-2">
+                <RotateCw class="w-4 h-4 animate-spin text-[#808080]" />
                 <span>正在同步用量读数…</span>
               </div>
 
               <!-- Token Summary (Tokens & Cache hit rate) -->
               <div
                 v-if="activeHoverData?.token_summary"
-                class="flex items-center justify-between px-1 text-[11px] text-neutral-400"
+                class="flex items-center justify-between px-1 text-[11px] text-[#808080]"
               >
                 <span>今日 Token: {{ activeHoverData.token_summary.today_tokens.toLocaleString() }}</span>
                 <span v-if="activeHoverData.token_summary.cache_hit_rate">
@@ -570,112 +643,113 @@ onUnmounted(() => {
             </div>
 
             <!-- Footer: Live Status Row (Codenotch: 工作中 刚刚) -->
-            <div class="pt-3 mt-2 border-t border-white/10 flex items-center justify-between text-xs text-neutral-400">
+            <div class="pt-3 mt-2 border-t border-[#242424] flex items-center justify-between text-xs text-[#808080]">
               <div class="flex flex-col">
-                <span class="font-medium text-neutral-300">{{ activeHoverData?.provider_name || activeHoverId }}</span>
-                <span class="text-[10px] text-neutral-400">已连接</span>
+                <span class="font-medium text-[#e8e8ea]">{{ activeHoverData?.provider_name || activeHoverId }}</span>
+                <span class="text-[10px] text-[#808080]">已连接</span>
               </div>
 
               <div class="flex flex-col items-end">
-                <div class="flex items-center gap-1 text-[11px] text-neutral-300">
-                  <RotateCw class="w-3 h-3 text-neutral-400 animate-spin" />
+                <div class="flex items-center gap-1 text-[11px] text-[#e8e8ea]">
+                  <RotateCw class="w-3 h-3 text-[#808080] animate-spin" />
                   <span>工作中</span>
                 </div>
-                <span class="text-[10px] text-neutral-400 mt-0.5">刚刚</span>
+                <span class="text-[10px] text-[#808080] mt-0.5">刚刚</span>
               </div>
             </div>
           </div>
         </div>
       </Transition>
 
-      <!-- 4. THE SCREEN EDGE NOTCH PILL (Expands on hover, clips down to rest pill when idle) -->
+      <!-- 3. TOP MOVE HANDLE (Codenotch #move handle: hand icon for carrying/dragging) -->
+      <div
+        id="move"
+        class="handle"
+        :class="{ 'hover': isHoveringMove, 'is-folded-handle': isFolded }"
+        title="按住拖动调整刘海位置"
+        @mousedown="handleDragMouseDown"
+      >
+        <svg class="h-rest" viewBox="-36 -36 72 72" aria-hidden="true">
+          <circle class="h-ring" r="28.5" fill="none" stroke-width="8.8" stroke-linecap="round" stroke-dasharray="44.77 179.07" />
+          <circle class="h-fill" r="28.5" fill="none" stroke-width="6.8" stroke-linecap="round" stroke-dasharray="44.77 179.07" />
+        </svg>
+        <div class="h-disc" />
+        <svg class="h-glyph" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M8 13V5.6a1.5 1.5 0 0 1 3 0V11h.6V3.5a1.5 1.5 0 0 1 3 0V11h.6V5a1.5 1.5 0 0 1 3 0v8.4c0 4.2-2 7.1-5.6 7.1-2.4 0-3.8-1-5.1-2.7l-3.8-5a1.5 1.5 0 0 1 2.2-2z" />
+        </svg>
+      </div>
+
+      <!-- 4. BOTTOM SETTINGS ORB (Codenotch #orb handle: gear icon for preferences) -->
+      <div
+        id="orb"
+        class="handle"
+        :class="{ 'hover': isHoveringOrb, 'is-folded-handle': isFolded }"
+        title="偏好设置"
+        @click="openSettings"
+      >
+        <svg class="h-rest" viewBox="-36 -36 72 72" aria-hidden="true">
+          <circle class="h-ring" r="28.5" fill="none" stroke-width="8.8" stroke-linecap="round" stroke-dasharray="44.77 179.07" />
+          <circle class="h-fill" r="28.5" fill="none" stroke-width="6.8" stroke-linecap="round" stroke-dasharray="44.77 179.07" />
+        </svg>
+        <div class="h-disc" />
+        <svg class="h-glyph" viewBox="0 0 12 12" aria-hidden="true">
+          <path fill-rule="evenodd" d="M5.1.6h1.8l.3 1.5 1.1.5 1.3-.8 1.3 1.3-.8 1.3.5 1.1 1.5.3v1.8l-1.5.3-.5 1.1.8 1.3-1.3 1.3-1.3-.8-1.1.5-.3 1.5H5.1l-.3-1.5-1.1-.5-1.3.8-1.3-1.3.8-1.3-.5-1.1L.6 6.9V5.1l1.5-.3.5-1.1-.8-1.3 1.3-1.3 1.3.8 1.1-.5zM6 4.1a1.9 1.9 0 1 0 0 3.8 1.9 1.9 0 0 0 0-3.8z" />
+        </svg>
+      </div>
+
+      <!-- 5. THE SCREEN EDGE NOTCH PILL (Codenotch #pill) -->
       <div
         ref="notchPillRef"
-        class="notch-pill relative z-40 w-[70px] bg-[#16171b]/95 border-l border-t border-b border-white/10 rounded-l-[28px] py-4 flex flex-col items-center gap-4 shadow-[-12px_0_32px_rgba(0,0,0,0.55)] backdrop-blur-2xl"
+        id="pill"
         :class="{ 'is-folded': isFolded }"
       >
-        <!-- Top Concave Flare connecting smoothly to Screen Edge -->
-        <svg
-          class="notch-flare absolute -top-6 right-0 w-6 h-6 text-[#16171b]/95 fill-current pointer-events-none"
-          viewBox="0 0 24 24"
-        >
-          <path d="M24,24 C10.745,24 0,13.255 0,0 L24,0 Z" />
-        </svg>
-
-        <!-- Top Drag Handle (6 dots grip icon matching user photo) -->
+        <!-- Provider Circular Rings Stack -->
         <div
-          class="notch-item cursor-grab active:cursor-grabbing text-neutral-500 hover:text-neutral-300 py-0.5 transition-colors"
-          title="按住拖动调整刘海位置"
-          @mousedown="handleDragMouseDown"
+          v-for="(item, idx) in notchProviders"
+          :key="item.id"
+          :data-provider="item.id"
+          class="cell provider-cell"
+          :style="{ '--i': idx }"
         >
-          <GripVertical class="w-3.5 h-3.5 opacity-40 hover:opacity-100" />
-        </div>
-
-        <!-- Provider Circular Rings List -->
-        <div class="flex flex-col items-center gap-4">
+          <!-- Circular Ring Gauge (Diameter 44px, matching Codenotch) -->
           <div
-            v-for="item in notchProviders"
-            :key="item.id"
-            :data-provider="item.id"
-            class="provider-cell notch-item relative flex flex-col items-center cursor-pointer group/ring transition-transform duration-150"
-            :class="activeHoverId === item.id ? 'scale-105' : 'hover:scale-105'"
+            class="ringwrap"
+            :class="{ 'active': activeHoverId === item.id }"
           >
-            <!-- Circular Ring Gauge (Diameter 44px, matching Codenotch) -->
-            <div class="relative w-11 h-11 flex items-center justify-center">
-              <svg class="w-11 h-11 -rotate-90 origin-center" viewBox="0 0 44 44">
-                <circle
-                  cx="22"
-                  cy="22"
-                  r="18"
-                  fill="none"
-                  stroke="rgba(255, 255, 255, 0.08)"
-                  stroke-width="3.5"
-                />
-                <circle
-                  cx="22"
-                  cy="22"
-                  r="18"
-                  fill="none"
-                  stroke-width="3.5"
-                  stroke-linecap="round"
-                  class="gauge-ring"
-                  :stroke="getRingStrokeColor(getProviderDisplayPercent(item.id, item.notch_metric))"
-                  :stroke-dasharray="CIRCUMFERENCE"
-                  :stroke-dashoffset="getRingDashOffset(getProviderDisplayPercent(item.id, item.notch_metric))"
-                />
-              </svg>
+            <svg class="w-11 h-11 -rotate-90 origin-center overflow-visible" viewBox="0 0 44 44">
+              <circle
+                cx="22"
+                cy="22"
+                r="18"
+                fill="none"
+                stroke="#303030"
+                stroke-width="3.5"
+              />
+              <circle
+                cx="22"
+                cy="22"
+                r="18"
+                fill="none"
+                stroke-width="3.5"
+                stroke-linecap="round"
+                class="gauge-ring"
+                :stroke="getRingStrokeColor(getProviderDisplayPercent(item.id, item.notch_metric))"
+                :stroke-dasharray="CIRCUMFERENCE"
+                :stroke-dashoffset="getRingDashOffset(getProviderDisplayPercent(item.id, item.notch_metric))"
+              />
+            </svg>
 
-              <!-- Center Provider SVG Logo inside 28px dark circle -->
-              <div
-                class="absolute inset-0 m-auto w-7 h-7 rounded-full bg-[#202126] flex items-center justify-center p-1.5 shadow-inner text-neutral-200 group-hover/ring:text-white transition-colors"
-              >
-                <ProviderIcon :name="item.id" class="w-3.5 h-3.5" />
-              </div>
-            </div>
-
-            <!-- Percentage Text Below Ring (e.g. 0%, 22%, 64%) -->
-            <div class="text-[13px] font-bold text-white tracking-tight text-center mt-1 leading-none drop-shadow-sm">
-              {{ getProviderBadgeText(item.id, item.notch_metric) }}
+            <!-- Center Provider Logo inside ring -->
+            <div class="glyph">
+              <ProviderIcon :name="item.id" class="w-5 h-5 text-neutral-200" />
             </div>
           </div>
+
+          <!-- Percentage Text Below Ring (Tabular numerals, Codenotch style) -->
+          <div class="pct">
+            {{ getProviderBadgeText(item.id, item.notch_metric) }}
+          </div>
         </div>
-
-        <!-- Bottom Settings Button (Gear icon to open Settings window) -->
-        <button
-          @click="openSettings"
-          class="notch-item mt-1 p-1.5 rounded-full text-neutral-400 hover:text-white hover:bg-white/10 transition-colors"
-          title="偏好设置"
-        >
-          <Settings class="w-4 h-4" />
-        </button>
-
-        <!-- Bottom Concave Flare connecting smoothly to Screen Edge -->
-        <svg
-          class="notch-flare absolute -bottom-6 right-0 w-6 h-6 text-[#16171b]/95 fill-current pointer-events-none"
-          viewBox="0 0 24 24"
-        >
-          <path d="M24,0 C10.745,0 0,10.745 0,24 L24,24 Z" />
-        </svg>
       </div>
     </div>
   </div>
@@ -683,72 +757,276 @@ onUnmounted(() => {
 
 <style scoped>
 /* ===================================================================== */
-/* 1. REST PILL (Codenotch #rest: Slim 10px capsule at right screen edge) */
+/* CODENOTCH CSS DESIGN VOCABULARY & APPLE MOTION SYSTEM                 */
 /* ===================================================================== */
-.rest-pill {
+:root {
+  --pill: #000000;
+  --edge: #2e2e2e;
+  --card: #0a0a0a;
+  --card-line: #242424;
+  --fillet: 38.7px;
+  --ring: 44px;
+}
+
+/* ===================================================================== */
+/* 1. REST PILL (Codenotch #rest: 10px x 79px capsule hugging edge)       */
+/* ===================================================================== */
+#rest {
   position: absolute;
+  box-sizing: border-box;
+  background: #000000;
+  border: 1px solid #2e2e2e;
+  border-right: none;
+  pointer-events: auto;
+  cursor: pointer;
   right: 0;
   top: 50%;
   transform: translateY(-50%);
   width: 10px;
   height: 79px;
-  background-color: #16171b;
-  border-left: 1px solid rgba(255, 255, 255, 0.22);
-  border-top: 1px solid rgba(255, 255, 255, 0.22);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.22);
-  border-right: none;
   border-radius: 6px 0 0 6px;
-  box-shadow: -4px 0 14px rgba(0, 0, 0, 0.5);
-  pointer-events: auto;
-  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.16s ease;
   z-index: 45;
-  transition: opacity 0.2s ease 0.16s;
+}
+
+#rest.is-active {
+  opacity: 1;
+  transition: opacity 0.2s ease 0.18s; /* arrives as the clip does */
 }
 
 /* ===================================================================== */
-/* 2. NOTCH PILL CLIP-PATH MORPHING (Codenotch Smooth Spring Expansion)  */
+/* 2. NOTCH PILL (Codenotch #pill: 70px body with concave radial fillets) */
 /* ===================================================================== */
-.notch-pill {
-  --clip-open: inset(-30px -1px -30px -1px round 0);
+#pill {
+  position: relative;
+  right: 0;
+  width: 70px;
+  padding: 18px 0;
+  background: #000000;
+  border-radius: 20px 0 0 20px;
+  border: 1px solid #2e2e2e;
+  border-right: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  cursor: pointer;
+  z-index: 40;
+  --fillet: 38.7px;
+  --clip-open: inset(-40px -1px -40px -1px round 0);
   --clip-rest: inset(calc(50% - 39.5px) 0 calc(50% - 39.5px) calc(100% - 10px) round 6px 0 0 6px);
   clip-path: var(--clip-open);
   transition: clip-path 0.36s cubic-bezier(0.32, 0.72, 0.24, 1);
 }
 
-.notch-pill.is-folded {
+#pill.is-folded {
   clip-path: var(--clip-rest);
   pointer-events: none;
 }
 
-/* Items inside notch slide right and fade out when folding */
-.notch-item {
-  transition: opacity 0.18s ease, transform 0.3s cubic-bezier(0.32, 0.72, 0.24, 1);
-}
-
-.is-folded .notch-item {
-  opacity: 0;
-  transform: translateX(12px);
+/* Fillets: Concave arcs between the pill's top/bottom and screen edge */
+#pill::before,
+#pill::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  width: var(--fillet);
+  height: var(--fillet);
   pointer-events: none;
 }
 
-/* Top & Bottom Concave Fillets */
-.notch-flare {
-  transition: opacity 0.2s ease;
+#pill::before {
+  top: calc(-1 * var(--fillet));
+  background: radial-gradient(circle at 0 0, transparent calc(var(--fillet) - 1.5px), #2e2e2e calc(var(--fillet) - 0.5px), #000000 calc(var(--fillet) + 0.5px));
 }
 
-.is-folded .notch-flare {
+#pill::after {
+  bottom: calc(-1 * var(--fillet));
+  background: radial-gradient(circle at 0 100%, transparent calc(var(--fillet) - 1.5px), #2e2e2e calc(var(--fillet) - 0.5px), #000000 calc(var(--fillet) + 0.5px));
+}
+
+/* ===================================================================== */
+/* 3. PROVIDER CELLS & RINGS                                             */
+/* ===================================================================== */
+.cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  transition: opacity 0.18s ease calc(var(--i, 0) * 28ms), transform 0.3s cubic-bezier(0.32, 0.72, 0.24, 1) calc(var(--i, 0) * 28ms);
+}
+
+.is-folded .cell {
   opacity: 0;
+  transform: translateX(10px);
   pointer-events: none;
 }
 
-/* Gauge progress stroke animation */
+.ringwrap {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  transition: transform 0.3s cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+
+.ringwrap:hover,
+.ringwrap.active {
+  transform: scale(1.08);
+}
+
+.glyph {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.pct {
+  font-size: 13px;
+  font-weight: 700;
+  color: #ffffff;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.2px;
+}
+
 .gauge-ring {
   transition: stroke-dashoffset 0.6s cubic-bezier(0.34, 1.4, 0.64, 1);
 }
 
+/* ===================================================================== */
+/* 4. THE HANDLES (Top Move Handle + Bottom Settings Orb)                */
+/* ===================================================================== */
+.handle {
+  position: absolute;
+  width: 57px;
+  height: 57px;
+  z-index: 46;
+  cursor: pointer;
+  --arc: 270deg;
+  transition: opacity 0.2s ease;
+}
+
+#move {
+  --arc: 0deg;
+  right: calc(38.7px - 28.5px);
+  top: calc(50% - 28.5px);
+  transform: translateY(-165px); /* Positioned over the top fillet pocket */
+}
+
+#orb {
+  --arc: 270deg;
+  right: calc(38.7px - 28.5px);
+  top: calc(50% - 28.5px);
+  transform: translateY(165px); /* Positioned over the bottom fillet pocket */
+}
+
+.handle.is-folded-handle {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.handle > * {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.36s cubic-bezier(0.34, 1.3, 0.64, 1);
+}
+
+.h-rest {
+  width: 72px;
+  height: 72px;
+  margin: -36px 0 0 -36px;
+  overflow: visible;
+  transform: rotate(var(--arc)) scale(1);
+}
+
+.h-ring {
+  stroke: #2e2e2e;
+}
+
+.h-fill {
+  stroke: #000000;
+}
+
+.h-disc {
+  width: 46.6px;
+  height: 46.6px;
+  margin: -23.3px 0 0 -23.3px;
+  border-radius: 50%;
+  background: #000000;
+  border: 1px solid #2e2e2e;
+  opacity: 0;
+  transform: scale(1.1);
+}
+
+.h-glyph {
+  width: 21px;
+  height: 21px;
+  margin: -10.5px 0 0 -10.5px;
+  fill: #e8e8ea;
+  color: #e8e8ea;
+  opacity: 0;
+  transform: rotate(-60deg) scale(0.5);
+  transition: opacity 0.2s, transform 0.55s cubic-bezier(0.34, 1.2, 0.64, 1);
+}
+
+.handle.hover .h-rest {
+  opacity: 0;
+  transform: rotate(var(--arc)) scale(0.86);
+}
+
+.handle.hover .h-disc {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.handle.hover .h-glyph {
+  opacity: 1;
+  transform: rotate(0deg) scale(1);
+}
+
+/* ===================================================================== */
+/* 5. HOVER CARD & ORGANIC TAIL                                         */
+/* ===================================================================== */
+#card {
+  position: absolute;
+  right: 98px;
+  width: 254px;
+  max-width: 254px;
+  background: #0a0a0a;
+  border: 1px solid #242424;
+  border-radius: 16px;
+  padding: 16px;
+  color: #ffffff;
+  box-shadow: 0 20px 45px rgba(0, 0, 0, 0.75);
+  overflow-wrap: anywhere;
+  min-width: 0;
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  z-index: 50;
+  transition: top 0.15s ease-out;
+}
+
+#tail {
+  position: absolute;
+  right: 69px;
+  width: 32px;
+  height: 36px;
+  background: #0a0a0a;
+  clip-path: path('M0 0C0 9 18.56 13.68 32 18C18.56 22.32 0 27 0 36Z');
+  z-index: 50;
+  pointer-events: none;
+  transition: top 0.15s ease-out;
+}
+
 /* Popover Speech-Bubble Spring Animation */
 .codenotch-pop-enter-active {
-  transition: opacity 0.16s ease-out, transform 0.2s cubic-bezier(0.34, 1.4, 0.64, 1);
+  transition: opacity 0.18s ease-out, transform 0.22s cubic-bezier(0.34, 1.4, 0.64, 1);
 }
 .codenotch-pop-leave-active {
   transition: opacity 0.12s ease-in, transform 0.12s ease-in;
