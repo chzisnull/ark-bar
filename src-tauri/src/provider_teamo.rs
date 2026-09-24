@@ -197,7 +197,35 @@ fn fetch_teamo_usage_uncached(custom_token: Option<&str>) -> ProviderUsageData {
         return data;
     };
 
-    let balance_json = match curl_get("/v1/billing/balance", token) {
+    let (start, end) = today_range();
+    let session_start = local_range_start("session");
+    let week_start = local_range_start("week");
+    let month_start = local_range_start("month");
+    let now = now_epoch();
+    let costs_path = format!("/v1/billing/costs?start_time={}&end_time={}", start, end);
+    let month_costs_path = format!("/v1/billing/costs?start_time={}&end_time={}", month_start, now);
+
+    let (balance_result, costs_json, today_usage, session_usage, week_usage, month_usage, month_cost_json) =
+        std::thread::scope(|scope| {
+            let balance_handle = scope.spawn(|| curl_get("/v1/billing/balance", token));
+            let costs_handle = scope.spawn(|| curl_get(&costs_path, token).ok());
+            let today_handle = scope.spawn(|| range_usage(token, start, end));
+            let session_handle = scope.spawn(|| range_usage(token, session_start, now));
+            let week_handle = scope.spawn(|| range_usage(token, week_start, now));
+            let month_handle = scope.spawn(|| range_usage(token, month_start, now));
+            let month_cost_handle = scope.spawn(|| curl_get(&month_costs_path, token).ok());
+            (
+                balance_handle.join().unwrap_or_else(|_| Err("余额查询线程异常".to_string())),
+                costs_handle.join().unwrap_or(None),
+                today_handle.join().unwrap_or_default(),
+                session_handle.join().unwrap_or_default(),
+                week_handle.join().unwrap_or_default(),
+                month_handle.join().unwrap_or_default(),
+                month_cost_handle.join().unwrap_or(None),
+            )
+        });
+
+    let balance_json = match balance_result {
         Ok(value) => value,
         Err(error) => {
             data.status_message = Some("TeamoRouter 同步失败".to_string());
@@ -205,23 +233,6 @@ fn fetch_teamo_usage_uncached(custom_token: Option<&str>) -> ProviderUsageData {
             return data;
         }
     };
-
-    let (start, end) = today_range();
-    let costs_path = format!("/v1/billing/costs?start_time={}&end_time={}", start, end);
-    let costs_json = curl_get(&costs_path, token).ok();
-    let today_usage = range_usage(token, start, end);
-    let session_usage = range_usage(token, local_range_start("session"), now_epoch());
-    let week_usage = range_usage(token, local_range_start("week"), now_epoch());
-    let month_usage = range_usage(token, local_range_start("month"), now_epoch());
-    let month_cost_json = curl_get(
-        &format!(
-            "/v1/billing/costs?start_time={}&end_time={}",
-            local_range_start("month"),
-            now_epoch()
-        ),
-        token,
-    )
-    .ok();
 
     if let Some(error) = costs_json
         .as_ref()

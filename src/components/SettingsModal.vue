@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import type {
@@ -299,6 +299,9 @@ const showTeamoKeyInput = ref(false);
 const teamoKey = ref('');
 const teamoKeySaved = ref(false);
 
+let unlistenOpenUpdate: (() => void) | null = null;
+let teamoKeySavedTimer: any = null;
+
 onMounted(async () => {
   try {
     const key = await invoke<string | null>('read_provider_token', { provider: 'teamo' });
@@ -312,7 +315,7 @@ onMounted(async () => {
   await syncNotchScope();
 
   // 刘海上的「去更新」按钮：直接弹更新弹窗（顺便实时查一次，避免拿到过期结论）
-  listen('open_update', () => {
+  unlistenOpenUpdate = await listen('open_update', () => {
     checkForUpdate();
   });
 });
@@ -322,7 +325,8 @@ async function saveTeamoKey() {
     await invoke('set_provider_token', { provider: 'teamo', token: teamoKey.value.trim() });
     teamoKeySaved.value = true;
     emit('provider-token-updated');
-    setTimeout(() => {
+    if (teamoKeySavedTimer) clearTimeout(teamoKeySavedTimer);
+    teamoKeySavedTimer = setTimeout(() => {
       teamoKeySaved.value = false;
     }, 2000);
   } catch {}
@@ -418,6 +422,12 @@ async function toggleNotchWindow() {
     }
   } catch {}
 }
+
+onUnmounted(() => {
+  if (unlistenOpenUpdate) unlistenOpenUpdate();
+  if (teamoKeySavedTimer) clearTimeout(teamoKeySavedTimer);
+  if (statusResetTimer) clearTimeout(statusResetTimer);
+});
 </script>
 
 <template>

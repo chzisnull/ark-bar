@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -60,9 +60,20 @@ fn emit_progress(
 
 /// Query Content-Length using curl -sIL to know total download size
 fn probe_content_length(url: &str) -> u64 {
-    let output = crate::env_resolver::create_command("curl")
-        .args(&["-sIL", "--connect-timeout", "10", "-H", "User-Agent: ark-bar-app", url])
-        .output();
+    let output = crate::env_resolver::execute_cmd_timeout(
+        "curl",
+        &[
+            "-sIL",
+            "--connect-timeout",
+            "10",
+            "--max-time",
+            "10",
+            "-H",
+            "User-Agent: ark-bar-app",
+            url,
+        ],
+        Duration::from_secs(12),
+    );
 
     if let Ok(out) = output {
         let text = String::from_utf8_lossy(&out.stdout);
@@ -147,6 +158,12 @@ fn execute_update_sync(
         "-S",
         "--connect-timeout",
         "20",
+        "--max-time",
+        "300",
+        "--speed-time",
+        "30",
+        "--speed-limit",
+        "1024",
         "-H",
         "User-Agent: ark-bar-app",
         "-o",
@@ -155,6 +172,9 @@ fn execute_update_sync(
     ]);
 
     let mut child = curl_cmd.spawn().map_err(|e| format!("启动下载失败: {}", e))?;
+
+    let started = Instant::now();
+    let max_duration = Duration::from_secs(300);
 
     // Poll download progress while child process is running
     loop {
@@ -168,6 +188,14 @@ fn execute_update_sync(
                 break;
             }
             Ok(None) => {
+                if started.elapsed() > max_duration {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let err_msg = "下载更新包超时（超过 300 秒），请检查网络或稍后重试".to_string();
+                    emit_progress(app, "error", 0.0, 0, total_bytes, &err_msg);
+                    return Err(err_msg);
+                }
+
                 let current_bytes = fs::metadata(&downloaded_file)
                     .map(|m| m.len())
                     .unwrap_or(0);

@@ -39,6 +39,10 @@ static SCOPE: Mutex<String> = Mutex::new(String::new());
 static ALONG_RIGHT: Mutex<f64> = Mutex::new(0.5);
 static ALONG_TOP: Mutex<f64> = Mutex::new(0.5);
 static LAST_ALONG_SENT: Mutex<f64> = Mutex::new(-1.0);
+/// 上次广播的贴边位置：拖动时 edge 几乎不变，变了才发（首次为 None，必发）
+static LAST_EDGE_SENT: Mutex<Option<String>> = Mutex::new(None);
+/// 上次落盘的摆放日志键（窗口/边/落点，每窗口一条）：位置没变就不重复写盘
+static LAST_PLACED: Mutex<Vec<(String, String, i32, i32)>> = Mutex::new(Vec::new());
 /// 状态文件位置（首次用到时确定）
 static STATE_PATH: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
 
@@ -131,6 +135,12 @@ fn is_dragging(label: &str) -> bool {
 
 fn any_dragging() -> bool {
     DRAGGING.lock().map(|g| !g.is_empty()).unwrap_or(false)
+}
+
+/// 是否正在「滑动」拖动（drag_begin 的 8ms 热路径）。搬运（begin_move）不设 DRAG_START，
+/// 所以不会被当成热路径而漏掉它的摆放日志。
+fn any_sliding() -> bool {
+    DRAG_START.lock().map(|g| !g.is_empty()).unwrap_or(false)
 }
 
 fn set_dragging(label: &str, on: bool) {
@@ -464,16 +474,35 @@ fn main_screen_height_points(window: &WebviewWindow) -> f64 {
 /// 把每一块屏上的刘海都钉到当前边、当前比例上。
 pub fn place_notch(app: &AppHandle) {
     let labels = notch_labels(app);
+    // 显示器只枚举一次：拖动时 8ms 一跳，不能每个窗口各枚举一遍全部显示器
+    let screens = desired_screens(app);
+    let mut main_h: Option<f64> = None;
     for (i, label) in labels.iter().enumerate() {
         let Some(w) = app.get_webview_window(label) else { continue };
+        // 主屏高度整队共用，第一个窗口查一次就够
+        let main_h = *main_h.get_or_insert_with(|| main_screen_height_points(&w));
         // 第 i 个窗口 ↔ 第 i 块屏（拔掉屏幕时退回主屏，不会留个窗口飘在不存在的地方）
-        let Some(mon) = screen_for_index(app, i) else { continue };
-        place_one(app, &w, &mon);
+        let Some(mon) = screens.get(i).or_else(|| screens.first()) else { continue };
+        place_one(app, &w, mon, main_h);
     }
     // 边与沿边比例是整队共享的：所有刘海一起翻布局、一起挪
     let edge = current_edge();
     let ratio = along(&edge);
-    let _ = app.emit("notch_edge", &edge);
+    // 拖动时 edge 几乎不变，原来每秒上百条重复广播纯属浪费；非拖动路径仍然每次都发，
+    // 保证新建窗口 / webview 重载后能自愈拿到当前边。
+    if any_sliding() {
+        if let Ok(mut last) = LAST_EDGE_SENT.lock() {
+            if last.as_deref() != Some(edge.as_str()) {
+                *last = Some(edge.clone());
+                let _ = app.emit("notch_edge", &edge);
+            }
+        }
+    } else {
+        if let Ok(mut last) = LAST_EDGE_SENT.lock() {
+            *last = Some(edge.clone());
+        }
+        let _ = app.emit("notch_edge", &edge);
+    }
     if let Ok(mut last) = LAST_ALONG_SENT.lock() {
         if (*last - ratio).abs() > 1e-4 {
             *last = ratio;
@@ -483,7 +512,7 @@ pub fn place_notch(app: &AppHandle) {
 }
 
 /// 摆一个刘海窗口。
-fn place_one(app: &AppHandle, w: &WebviewWindow, mon: &Screen) {
+fn place_one(app: &AppHandle, w: &WebviewWindow, mon: &Screen, main_h: f64) {
     let label = w.label().to_string();
     let edge = current_edge();
     let (lw, lh) = notch_window_size(&edge);
@@ -500,7 +529,6 @@ fn place_one(app: &AppHandle, w: &WebviewWindow, mon: &Screen) {
     // 位置按目标尺寸算，然后连同尺寸一次设完（见 set_notch_frame 的注释）
     let ratio = along(&edge);
     let (x, y) = edge_origin(mon, &edge, target.width as i32, target.height as i32, ratio);
-    let main_h = main_screen_height_points(w);
     set_notch_frame(
         app,
         &label,
@@ -534,11 +562,28 @@ fn place_one(app: &AppHandle, w: &WebviewWindow, mon: &Screen) {
         });
     }
 
-    // 摆放日志：刘海看不见时第一个该看的东西（上游同样每次都记一行）
-    crate::applog::log(&format!(
-        "notch placed: win={label} edge={edge} pos=({x},{y}) size={}x{} mon={:?}=({},{} {}x{}) scale={} along={ratio:.3}",
-        target.width, target.height, mon.name, mon.x, mon.y, mon.w, mon.h, mon.scale
-    ));
+    // 摆放日志：刘海看不见时第一个该看的东西。拖动（滑动）中每 8ms 摆一次，
+    // 不能每跳都写盘——滑动期间不记，收尾那次会记；位置/边没变也不重复记。
+    if !any_sliding() {
+        let key = (label.clone(), edge.clone(), x, y);
+        let changed = LAST_PLACED
+            .lock()
+            .map(|mut g| {
+                let same = g.iter().any(|k| k == &key);
+                if !same {
+                    g.retain(|k| k.0.as_str() != label.as_str());
+                    g.push(key);
+                }
+                !same
+            })
+            .unwrap_or(true);
+        if changed {
+            crate::applog::log(&format!(
+                "notch placed: win={label} edge={edge} pos=({x},{y}) size={}x{} mon={:?}=({},{} {}x{}) scale={} along={ratio:.3}",
+                target.width, target.height, mon.name, mon.x, mon.y, mon.w, mon.h, mon.scale
+            ));
+        }
+    }
 }
 
 #[derive(Clone, serde::Serialize)]

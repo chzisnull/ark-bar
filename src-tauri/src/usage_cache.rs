@@ -128,7 +128,7 @@ impl UsageCache {
         F: FnOnce() -> ProviderUsageData + Send + 'static,
     {
         const FRESH_TTL: Duration = Duration::from_secs(20);
-        const STALE_TTL: Duration = Duration::from_secs(2 * 60);
+        const STALE_TTL: Duration = Duration::from_secs(6 * 60);
 
         if !force {
             if let Some(fresh) = self.get_fresh(FRESH_TTL) {

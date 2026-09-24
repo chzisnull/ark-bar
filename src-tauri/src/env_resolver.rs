@@ -306,11 +306,19 @@ pub fn execute_cmd_timeout(cmd: &str, args: &[&str], timeout: Duration) -> Resul
                         let _ = child.kill();
                     }
                     let _ = child.wait();
+                    // 子进程可能留下持有继承管道写端的孙进程，此时 read_to_end 不会返回，
+                    // join 会把调用方一起拖死（连超时错误都返回不了），故这里放弃回收。
+                    drop(stdout_thread);
+                    drop(stderr_thread);
                     return Err(format!("命令 '{}' 超时 ({}s)", cmd, timeout.as_secs()));
                 }
                 std::thread::sleep(Duration::from_millis(15));
             }
-            Err(e) => return Err(format!("等待命令 '{}' 失败: {}", cmd, e)),
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("等待命令 '{}' 失败: {}", cmd, e));
+            }
         }
     }
 }

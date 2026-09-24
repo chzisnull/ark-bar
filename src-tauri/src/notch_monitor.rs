@@ -15,6 +15,15 @@ const HOT_PAD: f64 = 10.0;
 /// Sampling interval for cursor position tracking in milliseconds
 const WATCHDOG_MS: u64 = 35;
 
+/// Sampling interval while a notch window is visible but the cursor is away from it
+const IDLE_MS: u64 = 200;
+
+/// Sampling interval while no notch window is visible at all
+const DORMANT_MS: u64 = 250;
+
+/// Refresh the cached notch window label list every N full-rate ticks
+const LABEL_REFRESH_TICKS: u32 = 15;
+
 /// Check if cursor (lx, ly) relative to window top-left is inside any hot rect or the gap union
 fn cursor_in_hot(rects: &[[f64; 4]], lx: f64, ly: f64, window_size: Option<(f64, f64)>) -> bool {
     if rects.is_empty() {
@@ -83,33 +92,62 @@ pub fn start_monitor(app: AppHandle) {
         // 每个刘海窗口各自记住自己上一次的点穿状态（舰队里互不干扰）
         let mut click_through: Vec<(String, bool)> = Vec::new();
 
+        // 自适应采样：光标贴着刘海才用 35ms 高频，其余时间降频省电
+        let mut sleep_ms: u64 = WATCHDOG_MS;
+        // 窗口集合很少变，缓存标签列表，只在慢档或每 N 个快档 tick 刷新一次
+        let mut labels: Vec<String> = Vec::new();
+        let mut ticks_since_label_refresh: u32 = LABEL_REFRESH_TICKS;
+
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(WATCHDOG_MS));
+            std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
 
-            // 所有刘海窗口一起巡检：光标在哪块屏上，就只唤醒那一个
-            let labels: Vec<String> = crate::notch::notch_labels(&app);
-            for label in labels {
-                let Some(w) = app.get_webview_window(&label) else {
-                    continue;
-                };
-                // If window is hidden, do nothing
-                if !w.is_visible().unwrap_or(false) {
-                    continue;
+            ticks_since_label_refresh = ticks_since_label_refresh.wrapping_add(1);
+            if ticks_since_label_refresh >= LABEL_REFRESH_TICKS || sleep_ms != WATCHDOG_MS {
+                ticks_since_label_refresh = 0;
+                labels = crate::notch::notch_labels(&app);
+            }
+
+            // 先把可见的刘海窗口挑出来：一块都没有时不做任何后续系统调用
+            let mut visible: Vec<(String, tauri::WebviewWindow)> = Vec::new();
+            for label in &labels {
+                if let Some(w) = app.get_webview_window(label) {
+                    // If window is hidden, do nothing
+                    if w.is_visible().unwrap_or(false) {
+                        visible.push((label.clone(), w));
+                    }
                 }
-                let (Ok(win_pos), Ok(cur_pos)) = (w.outer_position(), app.cursor_position()) else {
+            }
+            if visible.is_empty() {
+                sleep_ms = DORMANT_MS;
+                continue;
+            }
+
+            // 光标位置每 tick 只取一次（原来是每块屏各取一次，多屏时白花 N 次系统调用）
+            let Ok(cur_pos) = app.cursor_position() else {
+                sleep_ms = IDLE_MS;
+                continue;
+            };
+
+            let mut cursor_in_hot_any = false;
+            // 所有刘海窗口一起巡检：光标在哪块屏上，就只唤醒那一个
+            for (label, w) in &visible {
+                let Ok(win_pos) = w.outer_position() else {
                     continue;
                 };
 
-                let rects = hot_for(&label);
+                let rects = hot_for(label);
                 let lx = cur_pos.x - win_pos.x as f64;
                 let ly = cur_pos.y - win_pos.y as f64;
                 let size = w.outer_size().ok().map(|s| (s.width as f64, s.height as f64));
                 let inside = cursor_in_hot(&rects, lx, ly, size);
+                if inside {
+                    cursor_in_hot_any = true;
+                }
 
-                let last = click_through.iter().find(|(l, _)| l == &label).map(|(_, v)| *v);
+                let last = click_through.iter().find(|(l, _)| l == label).map(|(_, v)| *v);
                 if last != Some(!inside) {
                     let _ = w.set_ignore_cursor_events(!inside);
-                    click_through.retain(|(l, _)| l != &label);
+                    click_through.retain(|(l, _)| l != label);
                     click_through.push((label.clone(), !inside));
                     // 事件只发给这一个窗口：广播会把每块屏的刘海一起展开
                     let _ = w.emit("notch_pointer", inside);
@@ -129,6 +167,8 @@ pub fn start_monitor(app: AppHandle) {
                     let _ = w.emit("notch_cursor", (logical_x, logical_y));
                 }
             }
+
+            sleep_ms = if cursor_in_hot_any { WATCHDOG_MS } else { IDLE_MS };
         }
     });
 }

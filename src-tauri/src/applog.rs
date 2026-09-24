@@ -5,7 +5,7 @@
 //! （舰队对账、摆放、点穿、活动状态变化）都往这个文件里记一行，
 //! 出问题时让用户把 `<app data dir>/arkbar.log` 发回来即可。
 
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -14,6 +14,8 @@ static LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
 /// 超过这个大小就只保留尾部，避免常年运行把磁盘写满
 const MAX_BYTES: u64 = 512 * 1024;
 static LOCK: Mutex<()> = Mutex::new(());
+/// 持久写入句柄：避免每条日志都 open/close，写入经 BufWriter 批量落盘
+static WRITER: OnceLock<Mutex<Option<BufWriter<std::fs::File>>>> = OnceLock::new();
 
 /// 由 lib.rs 在 setup 里调用一次（拿得到 app 数据目录之后）。
 pub fn init(path: PathBuf) {
@@ -33,6 +35,40 @@ fn stamp() -> String {
     dt
 }
 
+fn open_writer(path: &std::path::Path) -> Option<BufWriter<std::fs::File>> {
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .ok()
+        .map(BufWriter::new)
+}
+
+/// 流式轮转：只 Seek 读尾部 `MAX_BYTES/2` 再整写回，避免把整个 512KB 读进内存。
+fn rotate(path: &std::path::Path) {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let Ok(mut src) = std::fs::File::open(path) else {
+        return;
+    };
+    let Ok(len) = src.metadata().map(|m| m.len()) else {
+        return;
+    };
+    if src
+        .seek(SeekFrom::Start(len.saturating_sub(MAX_BYTES / 2)))
+        .is_err()
+    {
+        return;
+    }
+    let mut buf = Vec::new();
+    if src.read_to_end(&mut buf).is_err() {
+        return;
+    }
+    drop(src);
+    if let Ok(mut dst) = std::fs::OpenOptions::new().write(true).truncate(true).open(path) {
+        let _ = dst.write_all(&buf);
+    }
+}
+
 pub fn log(msg: &str) {
     // 顺带打一份到 stderr：开发时直接看终端
     eprintln!("{msg}");
@@ -41,23 +77,26 @@ pub fn log(msg: &str) {
         return;
     };
     let _guard = LOCK.lock();
+    let slot = WRITER.get_or_init(|| Mutex::new(None));
+    let Ok(mut writer) = slot.lock() else {
+        return;
+    };
+    if writer.is_none() {
+        *writer = open_writer(path);
+    }
     if let Ok(meta) = std::fs::metadata(path) {
         if meta.len() > MAX_BYTES {
-            if let Ok(text) = std::fs::read_to_string(path) {
-                let tail: String = text
-                    .chars()
-                    .rev()
-                    .take((MAX_BYTES / 2) as usize)
-                    .collect::<String>()
-                    .chars()
-                    .rev()
-                    .collect();
-                let _ = std::fs::write(path, tail);
+            if let Some(mut w) = writer.take() {
+                let _ = w.flush();
             }
+            rotate(path);
+            *writer = open_writer(path);
         }
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(f, "[{}] {}", stamp(), msg);
+    if let Some(w) = writer.as_mut() {
+        let _ = writeln!(w, "[{}] {}", stamp(), msg);
+        // 日志是排障第一现场，不能因为缓冲而在退出时丢掉最后几行
+        let _ = w.flush();
     }
 }
 

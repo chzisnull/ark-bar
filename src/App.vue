@@ -142,10 +142,18 @@ function loadCachedProviders(): Record<ProviderType, ProviderUsageData | null> {
 
 const providersData = ref<Record<ProviderType, ProviderUsageData | null>>(loadCachedProviders());
 
-function saveCachedProviders() {
+let cacheWriteTimer: any = null;
+function flushCachedProviders() {
+  cacheWriteTimer = null;
   try {
     localStorage.setItem(CACHE_KEY, JSON.stringify(providersData.value));
   } catch {}
+}
+
+// 去抖：后台一轮会逐厂商更新，合并为一次全量写，避免每窗口每周期写 5 次 blob
+function saveCachedProviders() {
+  if (cacheWriteTimer) clearTimeout(cacheWriteTimer);
+  cacheWriteTimer = setTimeout(flushCachedProviders, 350);
 }
 
 async function checkEnv() {
@@ -366,9 +374,18 @@ onMounted(() => {
     }
   });
 
-  setTimeout(() => {
-    prefetchOtherProviders();
-  }, 2500);
+  // 面板隐藏时不必预热其余厂商（用户看不到、后台线程也在刷新）；
+  // 空闲时执行，Safari/WKWebView 无 requestIdleCallback 时回退到 setTimeout
+  const runPrefetch = () => {
+    if (document.visibilityState === 'visible') {
+      prefetchOtherProviders();
+    }
+  };
+  if (typeof (window as any).requestIdleCallback === 'function') {
+    (window as any).requestIdleCallback(runPrefetch, { timeout: 5000 });
+  } else {
+    setTimeout(runPrefetch, 2500);
+  }
 
   setTimeout(() => {
     checkAutoUpdate();
@@ -378,6 +395,10 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener('focus', onPanelBecomeVisible);
   if (unlistenUsage) unlistenUsage();
+  if (cacheWriteTimer) {
+    clearTimeout(cacheWriteTimer);
+    flushCachedProviders();
+  }
 });
 function handleCloseSettings() {
   invoke('hide_window').catch(() => {});

@@ -94,6 +94,19 @@ function loadCachedData(): Record<ProviderType, ProviderUsageData | null> {
 const allCachedData = ref<Record<ProviderType, ProviderUsageData | null>>(loadCachedData());
 const providerTabs = ref<ProviderTabItem[]>(loadProviderTabs());
 
+// 跨窗口总线：把全量写合并为去抖，避免一个后台周期内逐厂商写 5 次全量 blob
+let cacheWriteTimer: any = null;
+function flushCacheWrite() {
+  cacheWriteTimer = null;
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify(allCachedData.value));
+  } catch {}
+}
+function scheduleCacheWrite() {
+  if (cacheWriteTimer) clearTimeout(cacheWriteTimer);
+  cacheWriteTimer = setTimeout(flushCacheWrite, 350);
+}
+
 // Display mode: 'hover' (default: collapsed pill, expands on hover) | 'always' (stay open) | 'hidden'
 const notchMode = ref<'hover' | 'always' | 'hidden'>(
   (localStorage.getItem('arkbar_notch_mode') as any) || 'hover'
@@ -270,10 +283,12 @@ function storedAlong(edge: NotchEdge): number | null {
 }
 
 // Report hot rectangles to Rust watchdog
-function reportHot() {
+let hotRafId: number | null = null;
+let lastHotKey: string | null = null;
+
+function computeHotPayload(): { rects: number[][]; expanded: boolean } {
   if (notchMode.value === 'hidden') {
-    invoke('set_hot', { rects: [], expanded: false }).catch(() => {});
-    return;
+    return { rects: [], expanded: false };
   }
 
   const k = window.devicePixelRatio || 1;
@@ -286,17 +301,15 @@ function reportHot() {
     const wakeSpan = REST_LENGTH + 2 * 20;
     if (notchEdge.value === 'top') {
       const r = [(W / 2 - REST_LENGTH / 2 - 20) * k, 0, wakeSpan * k, wakeDepth * k];
-      invoke('set_hot', { rects: [r], expanded: false }).catch(() => {});
-    } else {
-      const r = [
-        (W - wakeDepth) * k,
-        (H / 2 - REST_LENGTH / 2 - 20) * k,
-        wakeDepth * k,
-        wakeSpan * k,
-      ];
-      invoke('set_hot', { rects: [r], expanded: false }).catch(() => {});
+      return { rects: [r], expanded: false };
     }
-    return;
+    const r = [
+      (W - wakeDepth) * k,
+      (H / 2 - REST_LENGTH / 2 - 20) * k,
+      wakeDepth * k,
+      wakeSpan * k,
+    ];
+    return { rects: [r], expanded: false };
   }
 
   const rects: number[][] = [];
@@ -340,7 +353,24 @@ function reportHot() {
     }
   }
 
-  invoke('set_hot', { rects, expanded: true }).catch(() => {});
+  return { rects, expanded: true };
+}
+
+function flushHot() {
+  hotRafId = null;
+  const { rects, expanded } = computeHotPayload();
+  // 几何去重：DOM mousemove 与 Rust notch_cursor 双源会重复上报同一矩形，
+  // 同一批矩形 + 同一展开态就不再打扰 Rust
+  const key = `${expanded}|${JSON.stringify(rects.map((r) => r.map((v) => Math.round(v))))}`;
+  if (key === lastHotKey) return;
+  lastHotKey = key;
+  invoke('set_hot', { rects, expanded }).catch(() => {});
+}
+
+// Coalesce every reportHot() in a frame into a single deduped set_hot
+function reportHot() {
+  if (hotRafId !== null) return;
+  hotRafId = requestAnimationFrame(flushHot);
 }
 
 // Unfold the notch smoothly
@@ -593,8 +623,8 @@ function getProviderDisplayPercent(id: ProviderType, metric?: NotchMetric, model
   return 0;
 }
 
-// Percentage badge text shown under ring
-function getProviderBadgeText(id: ProviderType, metric?: NotchMetric, modelFilter?: string): string {
+// Percentage badge text from an already-computed percent (shared by the ring computed)
+function providerBadgeFromPct(id: ProviderType, pct: number): string {
   const data = allCachedData.value[id];
   if (!data || !data.is_connected) return '--';
 
@@ -603,8 +633,7 @@ function getProviderBadgeText(id: ProviderType, metric?: NotchMetric, modelFilte
     return val >= 100 ? `$${Math.round(val)}` : `$${val.toFixed(1)}`;
   }
 
-  const p = getProviderDisplayPercent(id, metric, modelFilter);
-  return `${p}%`;
+  return `${pct}%`;
 }
 
 // Stroke color based on Codenotch palette (tone function: ample, watch, crit)
@@ -620,6 +649,20 @@ function getRingDashOffset(percent: number): number {
   const clamped = Math.max(0, Math.min(100, percent));
   return CIRCUMFERENCE - (clamped / 100) * CIRCUMFERENCE;
 }
+
+// 每个圆环一帧只算一次：模板只读这些字段，避免同一厂商重复 filter + find
+const ringViews = computed(() => {
+  return notchProviders.value.map((item) => {
+    const pct = getProviderDisplayPercent(item.id, item.notch_metric, item.model_filter);
+    return {
+      ...item,
+      pct,
+      color: getRingStrokeColor(pct),
+      dashOffset: getRingDashOffset(pct),
+      badge: providerBadgeFromPct(item.id, pct),
+    };
+  });
+});
 
 // Format percent value (keep clean decimals if fractional, otherwise integer)
 function formatPercentValue(val: number): string {
@@ -785,7 +828,7 @@ async function refreshCurrentProvider(id: ProviderType | null) {
     });
     if (res && res.provider) {
       allCachedData.value[res.provider as ProviderType] = res;
-      localStorage.setItem(CACHE_KEY, JSON.stringify(allCachedData.value));
+      scheduleCacheWrite();
     }
   } catch (err) {
     console.error('Failed to refresh provider:', err);
@@ -851,18 +894,40 @@ onMounted(async () => {
     }
   });
 
-  // 3. Load provider usage
+  // 3. Load provider usage — hydrate from the Rust-side read-only cache first so the
+  //    notch does not kick off a second full CLI/network pull alongside the main window.
+  const allProviderIds: ProviderType[] = ['volcengine', 'antigravity', 'grok', 'codex', 'teamo'];
+  // 判据只能用 Rust 内存缓存是否有值：localStorage 是跨会话持久的，用它当判据会导致
+  // 每次重启都跳过拉取，非活跃厂商的数字要等一个后台周期才会更新。
+  let peeked = false;
   try {
-    const list: ProviderUsageData[] = await invoke('get_all_providers_usage');
-    if (Array.isArray(list)) {
-      list.forEach((item) => {
-        if (item && item.provider) {
-          allCachedData.value[item.provider as ProviderType] = item;
-        }
-      });
-      localStorage.setItem(CACHE_KEY, JSON.stringify(allCachedData.value));
-    }
+    const cached = await Promise.all(
+      allProviderIds.map((id) =>
+        invoke<ProviderUsageData | null>('peek_cached_usage', { provider: id }).catch(() => null)
+      )
+    );
+    cached.forEach((item) => {
+      if (item && item.provider) {
+        allCachedData.value[item.provider as ProviderType] = item;
+        peeked = true;
+      }
+    });
   } catch {}
+
+  if (!peeked) {
+    // Rust 缓存为空（冷启动 / 重启后首次）：回退到完整拉取一次
+    try {
+      const list: ProviderUsageData[] = await invoke('get_all_providers_usage');
+      if (Array.isArray(list)) {
+        list.forEach((item) => {
+          if (item && item.provider) {
+            allCachedData.value[item.provider as ProviderType] = item;
+          }
+        });
+      }
+    } catch {}
+  }
+  scheduleCacheWrite();
 
   unlistenUsage = await listen<any>('usage-updated', (event) => {
     const payload = event.payload;
@@ -872,7 +937,7 @@ onMounted(async () => {
       } else if (typeof payload === 'object') {
         allCachedData.value = { ...allCachedData.value, ...payload };
       }
-      localStorage.setItem(CACHE_KEY, JSON.stringify(allCachedData.value));
+      scheduleCacheWrite();
     }
   });
 
@@ -965,7 +1030,15 @@ onMounted(async () => {
       providerTabs.value = loadProviderTabs();
       nextTick(() => reportHot());
     } else if (e.key === CACHE_KEY) {
-      allCachedData.value = loadCachedData();
+      // 增量合并：逐厂商比较，只有变化的才换引用，未变的保持原引用以减少重渲范围
+      const incoming = loadCachedData();
+      const current = allCachedData.value;
+      (Object.keys(incoming) as ProviderType[]).forEach((id) => {
+        const next = incoming[id];
+        if (JSON.stringify(next) !== JSON.stringify(current[id])) {
+          current[id] = next;
+        }
+      });
     } else if (e.key === 'arkbar_notch_mode') {
       const mode = (localStorage.getItem('arkbar_notch_mode') as any) || 'hover';
       notchMode.value = mode;
@@ -1005,6 +1078,11 @@ onUnmounted(() => {
   if (activityTimer) clearInterval(activityTimer);
   if (foldTimer) clearTimeout(foldTimer);
   if (hideTimer) clearTimeout(hideTimer);
+  if (hotRafId !== null) cancelAnimationFrame(hotRafId);
+  if (cacheWriteTimer) {
+    clearTimeout(cacheWriteTimer);
+    flushCacheWrite();
+  }
 });
 </script>
 
@@ -1309,18 +1387,18 @@ onUnmounted(() => {
       >
         <!-- Provider Circular Rings Stack -->
         <div
-          v-for="(item, idx) in notchProviders"
-          :key="item.id"
-          :data-provider="item.id"
+          v-for="(ring, idx) in ringViews"
+          :key="ring.id"
+          :data-provider="ring.id"
           class="cell provider-cell"
           :style="{ '--i': idx }"
-          :title="`${item.name} · 点击立即刷新`"
-          @click.stop="onRingClick(item.id)"
+          :title="`${ring.name} · 点击立即刷新`"
+          @click.stop="onRingClick(ring.id)"
         >
           <!-- Circular Ring Gauge (Diameter 44px, matching Codenotch) -->
           <div
             class="ringwrap"
-            :class="{ 'active': activeHoverId === item.id }"
+            :class="{ 'active': activeHoverId === ring.id }"
           >
             <svg class="w-11 h-11 -rotate-90 origin-center overflow-visible" viewBox="0 0 44 44">
               <circle
@@ -1339,22 +1417,22 @@ onUnmounted(() => {
                 stroke-width="3.5"
                 stroke-linecap="round"
                 class="gauge-ring"
-                :stroke="getRingStrokeColor(getProviderDisplayPercent(item.id, item.notch_metric, item.model_filter))"
+                :stroke="ring.color"
                 :stroke-dasharray="CIRCUMFERENCE"
-                :stroke-dashoffset="getRingDashOffset(getProviderDisplayPercent(item.id, item.notch_metric, item.model_filter))"
+                :stroke-dashoffset="ring.dashOffset"
               />
             </svg>
 
             <!-- Center Provider Logo inside ring -->
             <div class="glyph">
-              <ProviderIcon :name="item.id" class="w-5 h-5 text-neutral-200" />
+              <ProviderIcon :name="ring.id" class="w-5 h-5 text-neutral-200" />
             </div>
           </div>
 
           <!-- Percentage Text Below Ring (Tabular numerals, Codenotch style) -->
           <!-- 未连接的厂商用琥珀色，一眼看出「不是 0%，是没拿到读数」 -->
-          <div class="pct" :class="{ 'is-offline': item.data && !item.data.is_connected }">
-            {{ getProviderBadgeText(item.id, item.notch_metric, item.model_filter) }}
+          <div class="pct" :class="{ 'is-offline': ring.data && !ring.data.is_connected }">
+            {{ ring.badge }}
           </div>
         </div>
       </div>

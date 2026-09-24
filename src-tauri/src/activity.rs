@@ -19,6 +19,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 
 const INTERVAL: Duration = Duration::from_secs(2);
+/// 启动后先等窗口稳下来再扫第一遍：启动那几百毫秒正是 webview 冷启动最吃 I/O 的时候，
+/// 别在这时候叠加一次文件系统扫描（background 的更新检查同样有初始延迟）。
+const INITIAL_DELAY: Duration = Duration::from_secs(8);
 /// Antigravity 回合中途可能长时间思考，窗口放宽（上游 staleAfter = 45s）
 const AG_STALE_MS: u64 = 45_000;
 /// 上游 `session()` 给 busy 的兜底：staleAfter + 15s
@@ -457,6 +460,8 @@ fn read_all(now: u64) -> Vec<Activity> {
 /// 每 2s 探测一次，只在变化时广播。
 pub fn start(app: AppHandle) {
     std::thread::spawn(move || {
+        // 先睡再扫：原来循环体先执行，启动瞬间就叠加一次文件系统扫描
+        std::thread::sleep(INITIAL_DELAY);
         let mut last: Vec<Activity> = Vec::new();
         loop {
             let found = read_all(now_ms());

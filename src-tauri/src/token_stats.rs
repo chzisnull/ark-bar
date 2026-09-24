@@ -105,7 +105,7 @@ pub fn fetch_volcengine_token_summary(force: bool) -> Option<ProviderTokenSummar
     if !force {
         if let Ok(guard) = VOLC_TOKEN_CACHE.lock() {
             if let Some((cached_at, ref summary)) = *guard {
-                if cached_at.elapsed() < Duration::from_secs(3 * 60) {
+                if cached_at.elapsed() < Duration::from_secs(6 * 60) {
                     return Some(summary.clone());
                 }
             }
@@ -320,7 +320,7 @@ pub fn fetch_codex_token_summary(force: bool) -> Option<ProviderTokenSummary> {
     if !force {
         if let Ok(guard) = CODEX_TOKEN_CACHE.lock() {
             if let Some((cached_at, ref summary)) = *guard {
-                if cached_at.elapsed() < Duration::from_secs(3 * 60) {
+                if cached_at.elapsed() < Duration::from_secs(6 * 60) {
                     return Some(summary.clone());
                 }
             }

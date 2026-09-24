@@ -64,6 +64,12 @@ pub async fn check_environment() -> EnvironmentStatus {
 }
 
 fn check_environment_sync() -> EnvironmentStatus {
+    check_environment_sync_with_plan(None)
+}
+
+/// `known_plan_error` 用于复用调用方刚拿到的 usage plan 结果：取数失败后
+/// 立刻用同一份失败信息核实登录态，避免再 spawn 一次完全相同的 plan 调用。
+fn check_environment_sync_with_plan(known_plan_error: Option<&str>) -> EnvironmentStatus {
     if let Ok(guard) = ENV_CACHE.lock() {
         if let Some((cached_at, ref status)) = *guard {
             if cached_at.elapsed() < Duration::from_secs(45) {
@@ -148,15 +154,17 @@ fn check_environment_sync() -> EnvironmentStatus {
         // 真去取用量却失败（用户看到的就是这个）。所以报「已登录」之后再用一次
         // 真实调用核实，核实不过就按未登录处理，让引导页把「重新授权」露出来。
         if status.logged_in {
-            match get_usage_plan() {
-                Ok(_) => {}
-                Err(e) if is_auth_failure(&e) => {
+            let plan_error = match known_plan_error {
+                Some(err) => Some(err.to_string()),
+                None => get_usage_plan().err(),
+            };
+            if let Some(e) = plan_error {
+                if is_auth_failure(&e) {
                     status.logged_in = false;
                     status.error_message = Some(
                         "火山方舟登录已失效（SSO 凭据无法续期），请重新授权登录".to_string(),
                     );
                 }
-                Err(_) => {}
             }
         }
     }
@@ -596,8 +604,19 @@ fn fetch_volcengine_usage_uncached(force: bool) -> ProviderUsageData {
 
             // Session/weekly reset timestamps only exist on the seat API.
             // Wait for them here so the UI is not missing countdown badges.
-            let seat_milestones = query_volc_seat_usage_cached(known_seat, force);
-            let plan_tier = get_volc_plan_tier();
+            // 席位查询依赖 plan 的 seat_id 必须等 plan 返回，但它与 token 汇总、
+            // 本地档位读取彼此独立，并发发起避免三段串行叠加。
+            let (seat_milestones, plan_tier, token_summary) = std::thread::scope(|scope| {
+                let seat_handle = scope.spawn(|| query_volc_seat_usage_cached(known_seat, force));
+                let tier_handle = scope.spawn(get_volc_plan_tier);
+                let token_handle =
+                    scope.spawn(|| crate::token_stats::fetch_volcengine_token_summary(force));
+                (
+                    seat_handle.join().unwrap_or(None),
+                    tier_handle.join().unwrap_or(None),
+                    token_handle.join().unwrap_or(None),
+                )
+            });
 
             if let Some(items) = json_val.get("items").and_then(|i| i.as_array()) {
                 let items_len = items.len();
@@ -761,7 +780,7 @@ fn fetch_volcengine_usage_uncached(force: bool) -> ProviderUsageData {
                 primary_session_percent,
                 primary_reset_at,
                 console_url: Some("https://console.volcengine.com/ark/region:cn-beijing/subscription/coding-plan-enterprise".to_string()),
-                token_summary: crate::token_stats::fetch_volcengine_token_summary(force),
+                token_summary,
                 extension: Default::default(),
             };
 
@@ -769,7 +788,16 @@ fn fetch_volcengine_usage_uncached(force: bool) -> ProviderUsageData {
         }
         Err(e) => {
             // Fallback via get_seat_info_usage directly if usage plan fails
-            if let Some(milestones) = query_volc_seat_usage(None) {
+            let (seat_fallback, token_summary) = std::thread::scope(|scope| {
+                let seat_handle = scope.spawn(|| query_volc_seat_usage(None));
+                let token_handle =
+                    scope.spawn(|| crate::token_stats::fetch_volcengine_token_summary(false));
+                (
+                    seat_handle.join().unwrap_or(None),
+                    token_handle.join().unwrap_or(None),
+                )
+            });
+            if let Some(milestones) = seat_fallback {
                 let mut periods = Vec::new();
                 let short_used = milestones.short_term_usage.unwrap_or(0.0);
                 let week_used = milestones.weekly_usage.unwrap_or(0.0);
@@ -833,7 +861,7 @@ fn fetch_volcengine_usage_uncached(force: bool) -> ProviderUsageData {
                     primary_session_percent: Some(short_used),
                     primary_reset_at: milestones.short_term_reset,
                     console_url: Some("https://console.volcengine.com/ark/region:cn-beijing/subscription/coding-plan-enterprise".to_string()),
-                    token_summary: crate::token_stats::fetch_volcengine_token_summary(false),
+                    token_summary,
                     extension: Default::default(),
                 };
 
@@ -841,7 +869,7 @@ fn fetch_volcengine_usage_uncached(force: bool) -> ProviderUsageData {
             }
 
             // Slow diagnostic path: only check environment when usage plan fails
-            let env_status = check_environment_sync();
+            let env_status = check_environment_sync_with_plan(Some(e.as_str()));
             let status_msg = if !env_status.has_arkcli {
                 "未检测到 arkcli 命令行工具".to_string()
             } else if is_auth_failure(&e) {
