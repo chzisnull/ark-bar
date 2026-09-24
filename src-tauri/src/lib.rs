@@ -15,6 +15,7 @@ mod notch_monitor;
 mod activity;
 mod notch;
 mod dropzones;
+mod applog;
 pub mod token_stats;
 
 use tauri::Manager;
@@ -85,6 +86,13 @@ pub fn run() {
             // 刘海右键菜单（刷新 / 保持展开 / 偏好设置 / 退出）
             notch::setup_menu(app.handle());
 
+            // 关键路径落盘日志（舰队/摆放/点穿/活动），出问题时用户能把它发回来
+            if let Ok(dir) = app.path().app_data_dir() {
+                let _ = std::fs::create_dir_all(&dir);
+                applog::init(dir.join("arkbar.log"));
+            }
+            applog::log("ark-bar 启动");
+
             // 先读回上次的贴边位置、沿边落点与覆盖范围，再摆第一下（否则会先摆右边缘再跳）
             notch::init_state(app.handle());
             // 按覆盖范围把每块屏上的刘海补齐（主显示器 / 所有显示器）
@@ -150,6 +158,7 @@ pub fn run() {
             notch::set_notch_mode,
             notch::set_notch_scope,
             notch::get_notch_scope,
+            applog::log_path,
             notch::show_notch_menu,
             dropzones::get_zones,
             notch_monitor::set_hot,

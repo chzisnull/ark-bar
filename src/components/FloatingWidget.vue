@@ -203,12 +203,26 @@ const activityMap = ref<Record<string, ProviderActivity>>({});
 const nowTick = ref(Date.now());
 let activityTimer: any = null;
 
-// 未连接时的原因（后端把「未装 arkcli / 未登录」都写在 status_message 里）
+// 未连接时的原因（后端把「未装 arkcli / 未登录 / 凭据失效」都写在 status_message 里）
 const disconnectReason = computed<string>(() => {
   const d = activeHoverData.value;
   if (!d || d.is_connected) return '';
   const raw = d.status_message || d.error_message || '';
   return raw.length > 24 ? `${raw.slice(0, 24)}…` : raw;
+});
+
+// 凭据失效（不是没装、也不是网络）时，按钮该说「重新授权」
+const needsReauth = computed<boolean>(() => {
+  const d = activeHoverData.value;
+  if (!d || d.is_connected) return false;
+  const text = `${d.status_message || ''} ${d.error_message || ''}`;
+  return /重新授权|重新登录|登录已失效|STS|refresh_token|refresh token|volc-sso/i.test(text);
+});
+
+// 原始报错：卡片放不下整段 JSON，短就全给，长就截断并指向设置
+const shortError = computed<string>(() => {
+  const raw = (activeHoverData.value?.error_message || '').replace(/\s+/g, ' ').trim();
+  return raw.length > 160 ? `${raw.slice(0, 160)}…（详情见设置里的未连接面板）` : raw;
 });
 
 const activeActivity = computed<ProviderActivity | null>(() =>
@@ -1042,14 +1056,18 @@ onUnmounted(() => {
               class="bg-white/[0.03] rounded-xl p-3 border border-white/[0.07] flex flex-col gap-2"
             >
               <div class="text-[11px] text-[#e8e8ea] leading-relaxed">
-                {{ activeHoverData.error_message || activeHoverData.status_message || '当前服务商未检测到登录凭据或授权令牌。' }}
+                {{ activeHoverData.status_message || '当前服务商未检测到登录凭据或授权令牌。' }}
+              </div>
+              <!-- 原始报错压成一行小字：够短就全给，太长就指向设置里那一屏 -->
+              <div v-if="activeHoverData.error_message" class="text-[10px] text-[#8e8e93] font-mono leading-snug break-all">
+                {{ shortError }}
               </div>
               <button
                 type="button"
                 class="self-start px-2.5 py-1 rounded-lg text-[11px] font-medium bg-[#0a84ff] text-white hover:bg-[#0a84ff]/85 transition-colors cursor-pointer"
                 @click.stop="openOnboarding"
               >
-                安装 / 授权
+                {{ needsReauth ? '重新授权' : '安装 / 授权' }}
               </button>
             </div>
             <!-- Teamo Balance Card -->

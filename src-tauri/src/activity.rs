@@ -461,6 +461,18 @@ pub fn start(app: AppHandle) {
         loop {
             let found = read_all(now_ms());
             if found != last {
+                // 状态变化记一行（上限 200 条，免得常年运行把日志写满）
+                static LOGGED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                if LOGGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 200 {
+                    crate::applog::log(&format!(
+                        "activity: {}",
+                        found
+                            .iter()
+                            .map(|a| format!("{}={}", a.provider, a.state))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    ));
+                }
                 last = found.clone();
                 let _ = app.emit("activity", &found);
             }

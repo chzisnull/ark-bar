@@ -144,6 +144,18 @@ const notchScope = ref<NotchScope>(
   (localStorage.getItem('arkbar_notch_scope') as NotchScope) || 'main'
 );
 
+// 覆盖范围以 Rust 侧的 notch.json 为准（和贴边位置同一份状态）：
+// 挂载时对齐一次，免得「存储被清过 / 手改过文件」时界面与实际行为各说各话
+async function syncNotchScope() {
+  try {
+    const scope = await invoke<string>('get_notch_scope');
+    if (scope === 'all' || scope === 'main') {
+      notchScope.value = scope as NotchScope;
+      localStorage.setItem('arkbar_notch_scope', scope);
+    }
+  } catch {}
+}
+
 async function setNotchScope(scope: NotchScope) {
   notchScope.value = scope;
   localStorage.setItem('arkbar_notch_scope', scope);
@@ -295,6 +307,8 @@ onMounted(async () => {
   try {
     autostartEnabled.value = await isEnabled();
   } catch {}
+
+  await syncNotchScope();
 });
 
 async function saveTeamoKey() {

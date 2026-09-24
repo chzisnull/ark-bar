@@ -4,8 +4,26 @@ use std::time::{Duration, Instant};
 
 use crate::provider_models::ProviderUsageData;
 
-pub struct UsageCache {
-    inner: Mutex<Option<(Instant, ProviderUsageData)>>,
+/// 这类未连接是「用户能自己解决」的：没装 CLI、没登录、凭据失效。
+/// 必须当场替换缓存并显示出来，不能拿上一次的旧读数盖过去。
+fn is_actionable_failure(data: &ProviderUsageData) -> bool {
+    const MARKERS: [&str; 6] = [
+        "重新授权",
+        "重新登录",
+        "登录已失效",
+        "未登录",
+        "未检测到 arkcli",
+        "未安装",
+    ];
+    let text = format!(
+        "{} {}",
+        data.status_message.as_deref().unwrap_or(""),
+        data.error_message.as_deref().unwrap_or("")
+    );
+    MARKERS.iter().any(|m| text.contains(m))
+}
+
+pub struct UsageCache {    inner: Mutex<Option<(Instant, ProviderUsageData)>>,
     refreshing: AtomicBool,
     /// 最近一次同步失败的时间：成功写入时清除。命中缓存返回前据此打
     /// "同步失败"标，覆盖后台线程静默失败时 UI 无感知的路径
@@ -73,6 +91,13 @@ impl UsageCache {
             return false;
         }
         if !data.is_connected {
+            // 用户能自己解决的问题（没装 CLI、没登录、凭据失效）必须**当场**报出来：
+            // 保留旧数据只会让界面继续显示上一次的读数，把「要重新授权」盖住——
+            // 用户看到的就是「检测没问题，但就是不行」。
+            if is_actionable_failure(&data) {
+                self.set(data);
+                return true;
+            }
             if let Some(old) = self.peek() {
                 if old.is_connected {
                     self.refreshing.store(false, Ordering::SeqCst);

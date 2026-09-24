@@ -305,6 +305,15 @@ pub fn desired_screens(app: &AppHandle) -> Vec<Screen> {
 /// scope = main 时只留主屏那一块。
 fn plan_screens(all: &[Screen], primary: Option<&Screen>, scope: &str) -> Vec<Screen> {
     let mut list: Vec<Screen> = all.to_vec();
+    // 调试用：没有第二块屏时也能走一遍舰队路径（ARKBAR_FAKE_EXTRA_SCREEN=1）
+    if std::env::var("ARKBAR_FAKE_EXTRA_SCREEN").is_ok() {
+        if let Some(first) = list.first().cloned() {
+            let mut fake = first.clone();
+            fake.x += fake.w;
+            fake.name = Some("FAKE-EXTRA".into());
+            list.push(fake);
+        }
+    }
     list.sort_by_key(|s| (s.x, s.y));
     if let Some(p) = primary {
         list.retain(|s| (s.x, s.y, s.w, s.h) != (p.x, p.y, p.w, p.h));
@@ -340,15 +349,41 @@ pub fn reconcile_fleet(app: &AppHandle) {
             let _ = win.destroy();
         }
     }
-    // 缺的补上
+    // 新窗口建出来是隐藏的：舰队现在是显示态就跟着显示出来。
+    // 少了这一步，在设置里把范围切到「所有显示器」之后，第二块屏上的窗口
+    // 其实建好了却一直是隐藏的——用户看到的就是「只有主显示器有」。
+    let was_visible = notch_labels(app).iter().any(|l| {
+        app.get_webview_window(l)
+            .and_then(|w| w.is_visible().ok())
+            .unwrap_or(false)
+    });
     for label in &labels {
         if app.get_webview_window(label).is_none() {
-            create_notch_window(app, label);
+            if let Some(w) = create_notch_window(app, label) {
+                if was_visible {
+                    let _ = w.show();
+                }
+            }
         }
     }
+    crate::applog::log(&format!(
+        "fleet reconcile: scope={} screens={:?} windows={:?}",
+        current_scope(),
+        desired.iter().map(|s| format!("{:?}({},{})", s.name, s.x, s.y)).collect::<Vec<_>>(),
+        notch_labels(app)
+            .iter()
+            .map(|l| {
+                let vis = app
+                    .get_webview_window(l)
+                    .and_then(|w| w.is_visible().ok())
+                    .unwrap_or(false);
+                format!("{l}:{}", if vis { "visible" } else { "hidden" })
+            })
+            .collect::<Vec<_>>()
+    ));
 }
 
-fn create_notch_window(app: &AppHandle, label: &str) {
+fn create_notch_window(app: &AppHandle, label: &str) -> Option<WebviewWindow> {
     use tauri::WebviewUrl;
     let built = tauri::WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html#float".into()))
         .title("ArkBar Notch")
@@ -362,8 +397,12 @@ fn create_notch_window(app: &AppHandle, label: &str) {
         .visible(false)
         .disable_drag_drop_handler()
         .build();
-    if let Err(e) = built {
-        eprintln!("ark-bar 新建刘海窗口失败 {label}: {e}");
+    match built {
+        Ok(w) => Some(w),
+        Err(e) => {
+            crate::applog::log(&format!("新建刘海窗口失败 {label}: {e}"));
+            None
+        }
     }
 }
 
@@ -496,10 +535,10 @@ fn place_one(app: &AppHandle, w: &WebviewWindow, mon: &Screen) {
     }
 
     // 摆放日志：刘海看不见时第一个该看的东西（上游同样每次都记一行）
-    eprintln!(
-        "ark-bar notch placed: win={label} edge={edge} pos=({x},{y}) size={}x{} mon={:?}=({},{} {}x{}) scale={} along={ratio:.3}",
+    crate::applog::log(&format!(
+        "notch placed: win={label} edge={edge} pos=({x},{y}) size={}x{} mon={:?}=({},{} {}x{}) scale={} along={ratio:.3}",
         target.width, target.height, mon.name, mon.x, mon.y, mon.w, mon.h, mon.scale
-    );
+    ));
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -574,11 +613,11 @@ pub fn begin_move(window: WebviewWindow, depth: f64, length: f64) {
     let app = window.app_handle().clone();
     let label = window.label().to_string();
     if is_dragging(&label) {
-        eprintln!("ark-bar notch carry ignored: {label} already dragging");
+        crate::applog::log(&format!("carry ignored: {label} 已在拖动"));
         return;
     }
     set_dragging(&label, true);
-    eprintln!("ark-bar notch carry begin: win={label} depth={depth} length={length}");
+    crate::applog::log(&format!("carry begin: win={label} depth={depth} length={length}"));
     std::thread::spawn(move || {
         let lbl = label.clone();
         let done = move |app: &AppHandle| {
@@ -629,7 +668,7 @@ pub fn begin_move(window: WebviewWindow, depth: f64, length: f64) {
             std::thread::sleep(Duration::from_millis(16));
         }
 
-        eprintln!("ark-bar notch carry: {from} -> {target} on {:?}", mon.name);
+        crate::applog::log(&format!("carry: {from} -> {target} on {:?}", mon.name));
         if target != from {
             if let Ok(mut g) = NOTCH_EDGE.lock() {
                 *g = target.clone();
@@ -651,7 +690,7 @@ pub fn drag_begin(window: WebviewWindow) {
     if is_dragging(&label) {
         return; // 已经在跟随了
     }
-    eprintln!("ark-bar notch slide begin: win={label}");
+    crate::applog::log(&format!("slide begin: win={label}"));
     let edge = current_edge();
     let cursor = app.cursor_position().unwrap_or(PhysicalPosition::new(0.0, 0.0));
     set_drag_start(
@@ -700,7 +739,7 @@ pub fn drag_begin(window: WebviewWindow) {
         }
         set_dragging(&label, false);
         // 收尾再摆一次，让落点正好压在边缘上
-        eprintln!("ark-bar notch slid along {edge} to {:.3}", along(&edge));
+        crate::applog::log(&format!("slid along {edge} to {:.3}", along(&edge)));
         save_state(&app);
         // 沿边比例是整队共享的：所有刘海一起挪到同一个比例
         place_notch(&app);
@@ -810,7 +849,7 @@ pub fn start_watcher(app: AppHandle) {
                 continue;
             }
             // 显示器插拔/改分辨率：补齐或收掉窗口，再整队摆一遍
-            eprintln!("ark-bar screens changed: {} -> {} screen(s)", last.len(), now.len());
+            crate::applog::log(&format!("显示器变化: {} -> {} 块", last.len(), now.len()));
             last = now;
             reconcile_fleet(&app);
             place_notch(&app);

@@ -142,6 +142,23 @@ fn check_environment_sync() -> EnvironmentStatus {
                 status.error_message = Some("解析 arkcli auth 状态返回失败".to_string());
             }
         }
+
+        // `auth status` 只说「本地存着凭据」，凭据本身可能已经失效——SSO 的
+        // refresh_token 过期时它照样报 logged_in=true，于是界面说「没问题」、
+        // 真去取用量却失败（用户看到的就是这个）。所以报「已登录」之后再用一次
+        // 真实调用核实，核实不过就按未登录处理，让引导页把「重新授权」露出来。
+        if status.logged_in {
+            match get_usage_plan() {
+                Ok(_) => {}
+                Err(e) if is_auth_failure(&e) => {
+                    status.logged_in = false;
+                    status.error_message = Some(
+                        "火山方舟登录已失效（SSO 凭据无法续期），请重新授权登录".to_string(),
+                    );
+                }
+                Err(_) => {}
+            }
+        }
     }
 
     if let Ok(mut guard) = ENV_CACHE.lock() {
@@ -517,6 +534,27 @@ pub fn peek_volcengine_usage() -> Option<ProviderUsageData> {
     VOLC_CACHE.peek()
 }
 
+/// 这条错误是不是「凭据失效」而不是网络/服务端抖动。
+///
+/// arkcli 把 SSO STS 的失败原样吐出来，形如：
+/// `ListSubscribeTrade requires Volcengine Ark SSO STS, please run arkcli auth login volc-sso`
+/// / `STS 续期失败: token 交换失败: invalid_request - The request parameter refresh_token is invalid`。
+/// 这类错误用户能自己解决（重新授权），必须和「取数失败」分开报。
+pub fn is_auth_failure(err: &str) -> bool {
+    let e = err.to_ascii_lowercase();
+    const MARKERS: [&str; 8] = [
+        "ark sso sts",
+        "volc-sso",
+        "refresh_token",
+        "refresh token",
+        "sts 续期失败",
+        "token 交换失败",
+        "invalid_grant",
+        "unauthorized",
+    ];
+    MARKERS.iter().any(|m| e.contains(m)) || err.contains("请重新登录") || err.contains("重新授权")
+}
+
 fn get_volc_plan_tier() -> Option<String> {
     // Windows 上没有 HOME，用 USERPROFILE（否则档位永远读不到）
     let home = std::env::var("HOME")
@@ -806,6 +844,9 @@ fn fetch_volcengine_usage_uncached(force: bool) -> ProviderUsageData {
             let env_status = check_environment_sync();
             let status_msg = if !env_status.has_arkcli {
                 "未检测到 arkcli 命令行工具".to_string()
+            } else if is_auth_failure(&e) {
+                // 凭据失效：说清楚「要重新授权」，别只丢一句取数失败
+                "火山方舟登录已失效，需要重新授权".to_string()
             } else if !env_status.logged_in {
                 "未登录火山方舟或登录已过期".to_string()
             } else {
@@ -1046,6 +1087,18 @@ mod tests {
         let val = parsed.unwrap();
         assert_eq!(val["items"][0]["seat_id"], "seat-test-123");
         assert_eq!(val["items"][0]["periods"][1]["percent"], 40.0);
+    }
+
+    #[test]
+    fn test_is_auth_failure_matches_real_errors() {
+        // 用户实际遇到的两条（截图里的原文）
+        let sts = r#"执行 usage plan 失败 (exit 1): {"ok": false, "error": {"type":"error","message":"auto-discover subscriptions: trade.list_subscribe: ark: ListSubscribeTrade: ark: ListSubscribeTrade requires Volcengine Ark SSO STS, please run `arkcli auth login volc-sso`: identity volc-2126402578 STS 续期失败: token 交换失败: invalid_request - The request parameter refresh_token is invalid.", "trace_id": "e1b5d8a19eb9f5f901bd2a87a05cfc23" }}"#;
+        assert!(is_auth_failure(sts));
+        assert!(is_auth_failure("please run `arkcli auth login volc-sso`"));
+        assert!(is_auth_failure("STS 续期失败"));
+        // 网络/服务端抖动不算授权问题
+        assert!(!is_auth_failure("执行 usage plan 失败 (exit 1): connection reset by peer"));
+        assert!(!is_auth_failure("无法运行 arkcli: No such file or directory"));
     }
 
     #[test]
