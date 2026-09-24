@@ -12,6 +12,9 @@ mod token_store;
 mod provider_manager;
 mod usage_cache;
 mod notch_monitor;
+mod activity;
+mod notch;
+mod dropzones;
 pub mod token_stats;
 
 use tauri::Manager;
@@ -74,6 +77,18 @@ pub fn run() {
             // Native cursor watchdog monitor for Notch hover expansion and click-through
             notch_monitor::start_monitor(app.handle().clone());
 
+            // 「它在工作吗？」：按 Codenotch 的 activity 引擎探测各厂商回合状态
+            activity::start(app.handle().clone());
+
+            // 屏幕配置变化时把刘海摆回边缘（拖动中不插手）
+            notch::start_watcher(app.handle().clone());
+
+            // 刘海右键菜单（刷新 / 保持展开 / 偏好设置 / 退出）
+            notch::setup_menu(app.handle());
+
+            // 先读回上次的贴边位置与沿边落点，再摆第一下（否则会先摆右边缘再跳）
+            notch::init_state(app.handle());
+
             // 全局快捷键 ⌘/Ctrl+Shift+A 呼出主面板。注册失败（如与其他应用
             // 冲突）只降级不崩溃：悬浮窗右键菜单仍是兜底入口。
             #[cfg(desktop)]
@@ -118,19 +133,24 @@ pub fn run() {
             tray::update_tray_title,
             tray::set_tray_icon_visible,
             tray::show_main_window,
+            tray::open_onboarding,
             tray::hide_window,
             tray::open_float_window,
             tray::close_float_window,
             tray::is_float_window_open,
-            tray::start_drag_move,
-            tray::update_drag_move,
-            tray::end_drag_move,
             tray::exit_app,
             tray::set_float_window_size,
             tray::set_main_window_size,
-            tray::set_notch_edge,
-            tray::recentre_notch,
+            notch::set_notch_edge,
+            notch::recentre_notch,
+            notch::drag_begin,
+            notch::begin_move,
+            notch::end_notch_drag,
+            notch::set_notch_mode,
+            notch::show_notch_menu,
+            dropzones::get_zones,
             notch_monitor::set_hot,
+            activity::get_activity,
         ])
         .run(tauri::generate_context!())
         .expect("运行 ArkBar 应用时出错");

@@ -235,6 +235,19 @@ function computeTrayTitle(target: ProviderType): string {
   return data.is_connected && p != null ? ` ${Math.round(p)}%` : '';
 }
 
+// 菜单栏图标显隐偏好的单一可信源：SettingsModal 写入的 `arkbar_show_tray`
+// （缺省隐藏，与 Rust 端启动时默认隐藏一致）。历史上这里读的是
+// `arkbar_tray_icon_visible`（v0.2.12 的旧键），导致设置里关掉图标后
+// 重启仍会重新出现——必须再手动开/关一次才生效。旧键仅做一次迁移。
+function trayIconVisiblePref(): boolean {
+  const stored = localStorage.getItem('arkbar_show_tray');
+  if (stored !== null) return stored === 'true';
+  const legacy = localStorage.getItem('arkbar_tray_icon_visible');
+  const migrated = legacy === null ? 'false' : legacy === 'false' ? 'false' : 'true';
+  localStorage.setItem('arkbar_show_tray', migrated);
+  return migrated === 'true';
+}
+
 function updateTrayTitle() {
   // 固定展示火山方舟 5 小时用量，不随界面 Tab 切换而变动
   const target: ProviderType = trayTarget.value === 'auto' ? 'volcengine' : trayTarget.value;
@@ -317,7 +330,7 @@ onMounted(() => {
   // 按持久化偏好应用菜单栏图标显隐（隐藏场景下托盘仍在后台刷新）；
   // 直接读 localStorage，避免维护第二份状态
   invoke('set_tray_icon_visible', {
-    visible: localStorage.getItem('arkbar_tray_icon_visible') !== 'false',
+    visible: trayIconVisiblePref(),
   }).catch(() => {});
 
   const hasCached = !!providersData.value[activeProvider.value];
@@ -331,6 +344,12 @@ onMounted(() => {
     updateTrayTitle();
   }).then((un) => {
     unlistenUsage = un;
+  });
+
+  // 刘海卡片上的「安装 / 授权」按钮：切到引导视图（装 arkcli / SSO 登录都在那一屏）
+  listen('open_onboarding', () => {
+    currentView.value = 'onboarding';
+    checkEnv();
   });
 
   window.addEventListener('focus', onPanelBecomeVisible);

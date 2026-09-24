@@ -126,7 +126,13 @@ async function setNotchEdge(edge: NotchEdge) {
   localStorage.setItem('arkbar_notch_edge', edge);
   window.dispatchEvent(new Event('storage'));
   try {
-    await invoke('set_notch_edge', { edge });
+    // 每条边各自记住自己被拖到的位置，切回来时原样恢复
+    const raw = localStorage.getItem(`arkbar_notch_along_${edge}`);
+    const parsed = raw === null ? null : Number(raw);
+    await invoke('set_notch_edge', {
+      edge,
+      along: parsed !== null && Number.isFinite(parsed) ? parsed : null,
+    });
   } catch (e) {
     console.error('Failed to set notch edge:', e);
   }

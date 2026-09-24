@@ -223,10 +223,20 @@ pub fn create_command(cmd: &str) -> Command {
     #[cfg(target_os = "windows")]
     {
         // 0x08000000 = CREATE_NO_WINDOW, ensures cmd.exe never pops up a black console window!
+        use std::os::windows::process::CommandExt as _;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
         let mut c = Command::new("cmd.exe");
         c.creation_flags(CREATE_NO_WINDOW);
-        c.arg("/C").arg(target_cmd);
+        c.arg("/C");
+        // `cmd /C <路径>` 遇到路径里的空格就把空格当命令结束——arkcli 装在
+        // `C:\Users\First Last\AppData\Roaming\npm\` 这类目录下时永远跑不起来，
+        // 用量也就永远刷不出来。用 raw_arg 原样写入（std 的 arg 会按 MSVCRT
+        // 规则把引号二次转义），cmd 自己会按「/C 后以引号开头」的规则剥掉这层引号。
+        if target_cmd.contains(' ') {
+            c.raw_arg(format!("\"{}\"", target_cmd));
+        } else {
+            c.arg(&target_cmd);
+        }
         c
     }
 

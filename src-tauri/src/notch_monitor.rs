@@ -100,6 +100,12 @@ pub fn start_monitor(app: AppHandle) {
                 let _ = w.set_ignore_cursor_events(!inside);
                 click_through = Some(!inside);
                 let _ = w.emit("notch_pointer", inside);
+                // 与上游同样的诊断：点穿状态每次翻转都记一行（含热区与光标相对位置），
+                // 「点了没反应」时第一个该看的就是它
+                eprintln!(
+                    "ark-bar click-through {} at cursor_rel=({lx:.0},{ly:.0}) rects={rects:?}",
+                    if inside { "off (cursor on the notch)" } else { "on (cursor elsewhere)" }
+                );
             }
 
             // Emit logical coordinates inside webview while cursor is inside hot region

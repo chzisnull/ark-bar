@@ -1,6 +1,6 @@
 [package]
 name = "ark-bar"
-version = "0.4.9"
+version = "0.5.0"
 description = "火山方舟 Coding Plan 菜单栏配额监控小工具"
 authors = ["chzisnull"]
 edition = "2021"
@@ -28,6 +28,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 # with the objc2-foundation version already in Tauri's dependency tree)
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-foundation = { version = "0.3", features = ["NSProcessInfo", "NSString"] }
+# 拖动跟随要靠 NSEvent.pressedMouseButtons 判断左键是否还按着（Codenotch 同款做法）
+objc2-app-kit = { version = "0.3", features = ["NSEvent", "NSWindow", "NSScreen"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

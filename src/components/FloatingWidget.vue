@@ -8,7 +8,11 @@ import { RotateCw } from 'lucide-vue-next';
 
 const CACHE_KEY = 'arkbar_cached_providers_data';
 const FOLD_GRACE = 450; // Grace period before folding back to rest pill (Codenotch spec: 450ms)
-const WAKE_BAND = 40;   // Wake zone width extending into the screen
+// 收起态的几个尺寸：上报给 Rust 的热区、页面自己的唤醒判定、以及收起胶囊的绘制
+// 共用这一份，避免三处各写一个数（以前热区 65px 深、唤醒判定 50px 深，对不上）
+const REST_DEPTH = 10;   // 贴边胶囊的厚度
+const REST_LENGTH = 79;  // 贴边胶囊的长度
+const WAKE_BAND = 40;    // 唤醒带往屏幕里延伸的宽度
 
 interface ProviderTabItem {
   id: ProviderType;
@@ -107,8 +111,10 @@ let foldTimer: any = null;
 let hideTimer: any = null;
 let pointerIn = false;
 let isDragging = false;
-let dragStartX = 0;
-let dragStartY = 0;
+// 刘海本体上的一次按下（Codenotch 的 press）：不拖动就是一次点击
+let pillPress: { x: number; y: number; id: ProviderType | null; alt: boolean } | null = null;
+// 右键菜单打开期间不折叠：菜单弹出时指针已经不在刘海上，否则刘海会在菜单底下收起来
+let menuOpen = false;
 
 // Visible active providers in the Notch
 const notchProviders = computed(() => {
@@ -183,6 +189,68 @@ watch(activeHoverGroups, () => {
   }
 }, { deep: true });
 
+// 「它在工作吗？」——由 Rust 端 activity 线程探测（Codenotch 同款引擎：Antigravity 看
+// transcript 回合、Codex 看 rollout 的 task_started/complete、Grok 看 updates.jsonl 新鲜度），
+// 这里只负责展示，不猜状态。没有信号就不显示状态行。
+interface ProviderActivity {
+  provider: string;
+  state: 'busy' | 'waiting' | 'success';
+  name: string;
+  detail: string;
+  since: number;
+}
+const activityMap = ref<Record<string, ProviderActivity>>({});
+const nowTick = ref(Date.now());
+let activityTimer: any = null;
+
+// 未连接时的原因（后端把「未装 arkcli / 未登录」都写在 status_message 里）
+const disconnectReason = computed<string>(() => {
+  const d = activeHoverData.value;
+  if (!d || d.is_connected) return '';
+  const raw = d.status_message || d.error_message || '';
+  return raw.length > 24 ? `${raw.slice(0, 24)}…` : raw;
+});
+
+const activeActivity = computed<ProviderActivity | null>(() =>
+  activeHoverId.value ? activityMap.value[activeHoverId.value] || null : null
+);
+
+// Rust 广播的是数组，界面按厂商取用
+function indexActivity(list: ProviderActivity[] | null | undefined): Record<string, ProviderActivity> {
+  const map: Record<string, ProviderActivity> = {};
+  (list || []).forEach((a) => {
+    if (a && a.provider) map[a.provider] = a;
+  });
+  return map;
+}
+
+// 等待输入用琥珀色：四个状态里只有它在向你要东西；工作中白、已完成绿
+function activityColor(state: string): string {
+  if (state === 'waiting') return '#ffd60a';
+  if (state === 'success') return '#30d158';
+  return '#f5f5f7';
+}
+
+// 「刚刚 / N 分钟前」——与 Codenotch 的 elapsed 文案一致
+function elapsedText(sinceMs: number): string {
+  const secs = Math.max(0, Math.floor((nowTick.value - sinceMs) / 1000));
+  if (secs < 60) return '刚刚';
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins} 分钟前`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  return `${Math.floor(hours / 24)} 天前`;
+}
+
+// 沿边位置按边各自记住（Codenotch：只有当前这条边会动，其他边保留原处）
+function storedAlong(edge: NotchEdge): number | null {
+  const raw = localStorage.getItem(`arkbar_notch_along_${edge}`);
+  if (raw === null) return null;
+  const v = Number(raw);
+  if (!Number.isFinite(v)) return null;
+  return Math.min(1, Math.max(0, v));
+}
+
 // Report hot rectangles to Rust watchdog
 function reportHot() {
   if (notchMode.value === 'hidden') {
@@ -195,22 +263,18 @@ function reportHot() {
   const H = window.innerHeight;
 
   if (isFolded.value) {
+    // 唤醒热区：收起胶囊本体 + 一条往屏幕里伸的唤醒带
+    const wakeDepth = REST_DEPTH + WAKE_BAND;
+    const wakeSpan = REST_LENGTH + 2 * 20;
     if (notchEdge.value === 'top') {
-      const pillW = 79;
-      const r = [
-        (W / 2 - pillW / 2 - 20) * k,
-        0,
-        (pillW + 40) * k,
-        (10 + WAKE_BAND + 15) * k,
-      ];
+      const r = [(W / 2 - REST_LENGTH / 2 - 20) * k, 0, wakeSpan * k, wakeDepth * k];
       invoke('set_hot', { rects: [r], expanded: false }).catch(() => {});
     } else {
-      const pillH = 79;
       const r = [
-        (W - 10 - WAKE_BAND) * k,
-        (H / 2 - pillH / 2 - 20) * k,
-        (10 + WAKE_BAND + 15) * k,
-        (pillH + 40) * k,
+        (W - wakeDepth) * k,
+        (H / 2 - REST_LENGTH / 2 - 20) * k,
+        wakeDepth * k,
+        wakeSpan * k,
       ];
       invoke('set_hot', { rects: [r], expanded: false }).catch(() => {});
     }
@@ -277,6 +341,7 @@ function unfold() {
 // Schedule fold back to resting pill
 function scheduleFold() {
   if (notchMode.value === 'always' || notchMode.value === 'hidden') return;
+  if (menuOpen) return;
   if (foldTimer) clearTimeout(foldTimer);
   if (isDragging || pointerIn) return;
 
@@ -335,7 +400,7 @@ function scheduleHideCard() {
   hideTimer = setTimeout(() => {
     activeHoverId.value = null;
     reportHot();
-  }, 180);
+  }, 250); // 与 Codenotch 的 scheduleHide 一致（250ms）；180ms 会显得卡片「急着消失」
 }
 
 // Helper for rectangle intersection test with optional padding
@@ -364,16 +429,19 @@ function handlePointerAt(clientX: number, clientY: number) {
   if (isFolded.value) {
     const W = window.innerWidth;
     const H = window.innerHeight;
+    // 与 reportHot 上报的唤醒热区同一套数字
+    const wakeDepth = REST_DEPTH + WAKE_BAND;
+    const wakeHalfSpan = REST_LENGTH / 2 + 20;
     if (notchEdge.value === 'top') {
       const cx = W / 2;
       // Wake up if cursor is near top screen center around the rest pill
-      if (clientY <= 10 + WAKE_BAND && Math.abs(clientX - cx) <= 55) {
+      if (clientY <= wakeDepth && Math.abs(clientX - cx) <= wakeHalfSpan) {
         unfold();
       }
     } else {
       const cy = H / 2;
       // Wake up if cursor is near right screen edge around the rest pill
-      if (clientX >= W - 10 - WAKE_BAND && Math.abs(clientY - cy) <= 55) {
+      if (clientX >= W - wakeDepth && Math.abs(clientY - cy) <= wakeHalfSpan) {
         unfold();
       }
     }
@@ -579,34 +647,89 @@ function formatResetLabel(resetAt?: string): string {
   return `${days}天后重置 (${date.getMonth() + 1}月${date.getDate()}日)`;
 }
 
-// Dragging window along edge using Move Handle
-function handleDragMouseDown(e: MouseEvent) {
+// 抓手 = 搬运（Codenotch 的 move handle）：升起四条边的落区，指针挑一条，松手交付。
+// 刘海在松手前不动——选的是屏幕上的一块地方，不是移动了多远。
+// 需要刘海竖起时的真实尺寸（深度/长度），页面量给自己。
+function pillShapes(): { depth: number; length: number } {
+  const el = notchPillRef.value;
+  const r = el ? el.getBoundingClientRect() : null;
+  const depth = r && r.width > 0 ? Math.round(r.width) : 70;
+  const length = r && r.height > 0 ? Math.round(r.height) : 260;
+  return { depth, length };
+}
+
+function handleMoveMouseDown(e: MouseEvent) {
   if (e.button !== 0) return;
   e.stopPropagation();
   isDragging = true;
-  dragStartX = e.screenX;
-  dragStartY = e.screenY;
   activeHoverId.value = null;
   if (foldTimer) clearTimeout(foldTimer);
-  invoke('start_drag_move').catch(() => {});
+  invoke('begin_move', pillShapes()).catch(() => { isDragging = false; });
 
-  const onMouseMoveDrag = (ev: MouseEvent) => {
-    if (!isDragging) return;
-    const dx = ev.screenX - dragStartX;
-    const dy = ev.screenY - dragStartY;
-    invoke('update_drag_move', { totalDx: dx, totalDy: dy }).catch(() => {});
-  };
-
-  const onMouseUpDrag = () => {
+  const onMouseUp = () => {
     isDragging = false;
-    invoke('end_drag_move').catch(() => {});
-    window.removeEventListener('mousemove', onMouseMoveDrag);
-    window.removeEventListener('mouseup', onMouseUpDrag);
-    scheduleFold();
+    // 兜底收尾：Rust 那边自己盯着左键，但页面松手时也说一声（跨平台都靠得住）
+    invoke('end_notch_drag').catch(() => {});
+    window.removeEventListener('mouseup', onMouseUp);
   };
+  window.addEventListener('mouseup', onMouseUp);
+}
 
-  window.addEventListener('mousemove', onMouseMoveDrag);
-  window.addEventListener('mouseup', onMouseUpDrag);
+// ⌥+拖动刘海本体 = 沿当前边微调（Codenotch 的 ⌥-drag）。
+// 不带 ⌥ 的按下只是一次点击（点圆环刷新该厂商），所以手滑不会把刘海搬走。
+function handlePillMouseDown(e: MouseEvent) {
+  if (e.button !== 0 || isFolded.value) return;
+  pillPress = {
+    x: e.clientX,
+    y: e.clientY,
+    id: (getCellAt(e.clientX, e.clientY)?.id || activeHoverId.value) as ProviderType | null,
+    alt: e.altKey,
+  };
+}
+
+function handlePillMouseMove(e: MouseEvent) {
+  const press = pillPress;
+  if (!press || isDragging || !press.alt) return;
+  if (Math.abs(e.clientY - press.y) > 4 || Math.abs(e.clientX - press.x) > 4) {
+    isDragging = true;
+    if (hideTimer) clearTimeout(hideTimer);
+    activeHoverId.value = null;
+    invoke('drag_begin').catch(() => {
+      isDragging = false;
+    });
+  }
+}
+
+function handlePillMouseUp(e: MouseEvent) {
+  if (e.button !== 0) return;
+  const press = pillPress;
+  pillPress = null;
+  // 没拖动过：这一下是点击——点在哪个圆环上就刷新哪个厂商
+  if (press && !isDragging && press.id) {
+    refreshCurrentProvider(press.id);
+  }
+  isDragging = false;
+}
+
+function handleNotchContextMenu(e: MouseEvent) {
+  e.preventDefault();
+  if (isDragging) return;
+  const pid = getCellAt(e.clientX, e.clientY)?.id || activeHoverId.value || null;
+  menuOpen = true;
+  // 这个调用在菜单关闭后才返回，那之后才轮到考虑折叠
+  invoke('show_notch_menu', { provider: pid })
+    .catch(() => {})
+    .finally(() => {
+      menuOpen = false;
+      scheduleFold();
+    });
+}
+
+// 去安装/授权：打开设置窗口并直接落到引导（安装 arkcli / SSO 登录）那一屏
+function openOnboarding() {
+  activeHoverId.value = null;
+  invoke('open_onboarding').catch(() => {});
+  scheduleFold();
 }
 
 // Open settings window from Settings Orb
@@ -619,6 +742,12 @@ function openSettings(e?: MouseEvent) {
 
 // Manual instant refresh for currently hovered provider
 const isRefreshingProvider = ref(false);
+
+// 点圆环即刷新该厂商（Codenotch 的 ring 点击语义）：先把卡片切到它，再强制拉一次
+function onRingClick(id: ProviderType) {
+  activeHoverId.value = id;
+  nextTick(() => refreshCurrentProvider(id));
+}
 
 async function refreshCurrentProvider(id: ProviderType | null) {
   if (!id || isRefreshingProvider.value) return;
@@ -646,6 +775,12 @@ let unlistenPointer: (() => void) | null = null;
 let unlistenCursor: (() => void) | null = null;
 let unlistenTabs: (() => void) | null = null;
 let unlistenEdge: (() => void) | null = null;
+let unlistenActivity: (() => void) | null = null;
+let unlistenAlong: (() => void) | null = null;
+let unlistenMove: (() => void) | null = null;
+let unlistenDrag: (() => void) | null = null;
+let unlistenRefresh: (() => void) | null = null;
+let unlistenKeepOpen: (() => void) | null = null;
 
 watch(activeHoverId, (newId) => {
   if (newId && notchPillRef.value) {
@@ -662,8 +797,14 @@ watch(activeHoverId, (newId) => {
 onMounted(async () => {
   window.addEventListener('mousemove', handleDomMouseMove);
 
-  // Sync initial edge position to Rust backend
-  invoke('set_notch_edge', { edge: notchEdge.value }).catch(() => {});
+
+  // 贴边位置以 Rust 侧的 notch.json 为准（启动时它已经按上次的位置摆好了）。
+  // 只有在 localStorage 里**明确存过**选择时才回传一次——否则默认值 'right'
+  // 会在 webview 存储被清掉之后把用户选好的顶部贴边顶掉。
+  const storedEdge = localStorage.getItem('arkbar_notch_edge');
+  if (storedEdge === 'top' || storedEdge === 'right') {
+    invoke('set_notch_edge', { edge: storedEdge, along: storedAlong(storedEdge) }).catch(() => {});
+  }
 
   // 1. Listen to native watchdog pointer in/out events
   unlistenPointer = await listen<boolean>('notch_pointer', (event) => {
@@ -716,13 +857,69 @@ onMounted(async () => {
     }
   });
 
-  unlistenEdge = await listen<string>('notch_edge_changed', (event) => {
+  // Rust 摆好窗口后会广播它落在哪条边（页面自己看不出），搬运换边后靠它把布局翻过来。
+  // 事件名必须与 Rust 端 emit 的一致：place_notch 发的是 `notch_edge`。
+  unlistenEdge = await listen<string>('notch_edge', (event) => {
     if (event.payload === 'top' || event.payload === 'right') {
       notchEdge.value = event.payload;
+      localStorage.setItem('arkbar_notch_edge', event.payload);
       activeHoverId.value = null;
       nextTick(() => reportHot());
     }
   });
+
+  // 活动状态：先取一份当前值，再听 Rust 端的变化广播
+  try {
+    const list = await invoke<ProviderActivity[]>('get_activity');
+    activityMap.value = indexActivity(list);
+  } catch {}
+  unlistenActivity = await listen<ProviderActivity[]>('activity', (event) => {
+    activityMap.value = indexActivity(event.payload);
+  });
+  // 「刚刚 / N 分钟前」要随时间刷新；卡片只在悬停时可见，10s 一次可忽略
+  activityTimer = setInterval(() => {
+    nowTick.value = Date.now();
+  }, 10000);
+
+  // 刘海沿边位置（拖动落点）由 Rust 回报，按边存起来，下次启动原样恢复
+  unlistenAlong = await listen<{ edge: string; along: number }>('notch_along', (event) => {
+    const p = event.payload;
+    if (p && (p.edge === 'top' || p.edge === 'right') && Number.isFinite(p.along)) {
+      localStorage.setItem(`arkbar_notch_along_${p.edge}`, String(p.along));
+    }
+  });
+
+  // 搬运/滑动的收尾都由 Rust 通知（它自己盯着左键，不依赖页面回传）
+  unlistenMove = await listen('move_end', () => {
+    isDragging = false;
+    activeHoverId.value = null;
+    nextTick(() => reportHot());
+    scheduleFold();
+  });
+  unlistenDrag = await listen('drag_end', () => {
+    isDragging = false;
+    nextTick(() => reportHot());
+    scheduleFold();
+  });
+
+  // 右键菜单
+  unlistenRefresh = await listen('notch_refresh', () => {
+    // 悬停中的厂商优先；没有就用刘海里的第一个
+    const target = (activeHoverId.value ||
+      notchProviders.value[0]?.id ||
+      'volcengine') as ProviderType;
+    refreshCurrentProvider(target);
+  });
+  unlistenKeepOpen = await listen('notch_keep_open', () => {
+    const next = notchMode.value === 'always' ? 'hover' : 'always';
+    notchMode.value = next;
+    localStorage.setItem('arkbar_notch_mode', next);
+    isFolded.value = next === 'hover';
+    invoke('set_notch_mode', { mode: next }).catch(() => {});
+    nextTick(() => reportHot());
+  });
+  // 右键菜单要勾选「保持展开」，把当前模式告诉 Rust
+  invoke('set_notch_mode', { mode: notchMode.value }).catch(() => {});
 
   window.addEventListener('storage', (e) => {
     if (e.key === 'arkbar_provider_tabs') {
@@ -759,6 +956,13 @@ onUnmounted(() => {
   if (unlistenCursor) unlistenCursor();
   if (unlistenTabs) unlistenTabs();
   if (unlistenEdge) unlistenEdge();
+  if (unlistenActivity) unlistenActivity();
+  if (unlistenAlong) unlistenAlong();
+  if (unlistenMove) unlistenMove();
+  if (unlistenDrag) unlistenDrag();
+  if (unlistenRefresh) unlistenRefresh();
+  if (unlistenKeepOpen) unlistenKeepOpen();
+  if (activityTimer) clearInterval(activityTimer);
   if (foldTimer) clearTimeout(foldTimer);
   if (hideTimer) clearTimeout(hideTimer);
 });
@@ -802,6 +1006,10 @@ onUnmounted(() => {
                 </h3>
                 <span class="text-[10px] text-[#8e8e93] leading-tight mt-0.5">
                   {{ activeHoverData?.is_connected ? '运行正常' : '未连接' }}
+                  <!-- 未连接就把原因摆出来（Windows 上最常见的是没装 arkcli / 没授权） -->
+                  <span v-if="!activeHoverData?.is_connected && disconnectReason" class="text-[#ff9f0a] ml-1">
+                    · {{ disconnectReason }}
+                  </span>
                   <span v-if="activeHoverTab?.model_filter && activeHoverTab.model_filter !== 'all'" class="text-[#00FF88] ml-1 font-medium">
                     · {{ activeHoverTab.model_filter === 'gemini' ? 'Gemini 模型' : 'Claude 模型' }}
                   </span>
@@ -828,6 +1036,22 @@ onUnmounted(() => {
 
           <!-- Card Body: Groups & Limit Rows (Fits naturally without clunky scrollbars!) -->
           <div class="space-y-2.5">
+            <!-- 未连接：说清原因 + 一键去安装/授权（不装 CLI、不授权就永远刷不出来） -->
+            <div
+              v-if="activeHoverData && !activeHoverData.is_connected"
+              class="bg-white/[0.03] rounded-xl p-3 border border-white/[0.07] flex flex-col gap-2"
+            >
+              <div class="text-[11px] text-[#e8e8ea] leading-relaxed">
+                {{ activeHoverData.error_message || activeHoverData.status_message || '当前服务商未检测到登录凭据或授权令牌。' }}
+              </div>
+              <button
+                type="button"
+                class="self-start px-2.5 py-1 rounded-lg text-[11px] font-medium bg-[#0a84ff] text-white hover:bg-[#0a84ff]/85 transition-colors cursor-pointer"
+                @click.stop="openOnboarding"
+              >
+                安装 / 授权
+              </button>
+            </div>
             <!-- Teamo Balance Card -->
             <div
               v-if="activeHoverId === 'teamo' && activeHoverData?.extension?.balance"
@@ -922,11 +1146,21 @@ onUnmounted(() => {
               <span class="font-medium text-[#f5f5f7]">{{ activeHoverData?.provider_name || activeHoverId }}</span>
             </div>
 
-            <div class="flex items-center gap-1.5 text-[11px] text-[#e8e8ea]">
-              <RotateCw class="w-3 h-3 text-[#8e8e93] animate-spin" />
-              <span>工作中</span>
-              <span class="text-[10px] text-[#8e8e93]">· 刚刚</span>
+            <div v-if="activeActivity" class="flex items-center gap-1.5 text-[11px]">
+              <RotateCw
+                v-if="activeActivity.state === 'busy'"
+                class="w-3 h-3 animate-spin"
+                :style="{ color: activityColor(activeActivity.state) }"
+              />
+              <span
+                v-else
+                class="w-1.5 h-1.5 rounded-full"
+                :style="{ background: activityColor(activeActivity.state) }"
+              />
+              <span :style="{ color: activityColor(activeActivity.state) }">{{ activeActivity.detail }}</span>
+              <span class="text-[10px] text-[#8e8e93]">· {{ elapsedText(activeActivity.since) }}</span>
             </div>
+            <!-- 没有信号就什么都不显示（Codenotch：宁可不报，也不编一个「工作中」） -->
           </div>
         </div>
       </div>
@@ -941,6 +1175,7 @@ onUnmounted(() => {
         notchEdge === 'top' ? 'flex-col pt-0 is-edge-top' : 'flex-row pr-0 is-edge-right',
         { 'is-folded-body': isFolded }
       ]"
+      @contextmenu="handleNotchContextMenu"
     >
       <!-- 1. REST PILL (Codenotch #rest: Sleek capsule hugging edge when folded) -->
       <div
@@ -950,6 +1185,7 @@ onUnmounted(() => {
           notchEdge === 'top' ? 'is-edge-top' : 'is-edge-right'
         ]"
         @mouseenter="unfold"
+        @mousedown="unfold"
       />
 
       <!-- 2. TOP/LEFT MOVE HANDLE (Codenotch #move handle: hand icon for carrying/dragging) -->
@@ -961,7 +1197,7 @@ onUnmounted(() => {
           notchEdge === 'top' ? 'is-edge-top' : 'is-edge-right'
         ]"
         title="按住拖动调整刘海位置"
-        @mousedown="handleDragMouseDown"
+        @mousedown="handleMoveMouseDown"
         @mouseenter="isHoveringMove = true"
         @mouseleave="isHoveringMove = false"
       >
@@ -1006,6 +1242,9 @@ onUnmounted(() => {
           { 'is-folded': isFolded },
           notchEdge === 'top' ? 'is-edge-top' : 'is-edge-right'
         ]"
+        @mousedown="handlePillMouseDown"
+        @mousemove="handlePillMouseMove"
+        @mouseup="handlePillMouseUp"
       >
         <!-- Provider Circular Rings Stack -->
         <div
@@ -1014,6 +1253,8 @@ onUnmounted(() => {
           :data-provider="item.id"
           class="cell provider-cell"
           :style="{ '--i': idx }"
+          :title="`${item.name} · 点击立即刷新`"
+          @click.stop="onRingClick(item.id)"
         >
           <!-- Circular Ring Gauge (Diameter 44px, matching Codenotch) -->
           <div
@@ -1050,7 +1291,8 @@ onUnmounted(() => {
           </div>
 
           <!-- Percentage Text Below Ring (Tabular numerals, Codenotch style) -->
-          <div class="pct">
+          <!-- 未连接的厂商用琥珀色，一眼看出「不是 0%，是没拿到读数」 -->
+          <div class="pct" :class="{ 'is-offline': item.data && !item.data.is_connected }">
             {{ getProviderBadgeText(item.id, item.notch_metric, item.model_filter) }}
           </div>
         </div>
@@ -1235,9 +1477,14 @@ onUnmounted(() => {
   transition: transform 0.3s cubic-bezier(0.34, 1.4, 0.64, 1);
 }
 
-.ringwrap:hover,
-.ringwrap.active {
-  transform: scale(1.08);
+/* Codenotch：悬停不放大（否则指针一靠近就「粘」上去），按下才缩到 .93 给回执 */
+.pct.is-offline {
+  color: #ff9f0a;
+}
+
+.ringwrap:active {
+  transform: scale(0.93);
+  transition: transform 0.12s ease-out;
 }
 
 .glyph {

@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>ArkBar drop zones</title>
+<style>
+  /* 搬运刘海时，一块屏幕上它能落下的四个地方。
+     窗口本身是点击穿透且永不取焦点的（由 Rust 设置）。 */
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;width:100%;height:100%;background:transparent;overflow:hidden;user-select:none;cursor:default}
+  /* 与 Codenotch 的 EdgeDropZones 一致：底色两种外观下都是黑的（.3，瞄准的 .62），
+     只有虚线描边会翻转（常态 .72、瞄准时 1）。 */
+  :root{--wash:rgba(0,0,0,.3); --wash-on:rgba(0,0,0,.62); --line:rgba(255,255,255,.72); --line-on:#ffffff}
+  :root[data-theme="light"]{--line:rgba(29,29,31,.72); --line-on:#1d1d1f}
+  .zone{
+    position:absolute;background:var(--wash);
+    /* 刘海自己的轮廓：虚线 + 内部洗色。只有描边的话在浅色或花哨的桌面上会看不见，
+       而那正是最需要看清落点的时候。 */
+    border:3px dashed var(--line);
+    transition:transform .3s cubic-bezier(.34,1.3,.64,1),background-color .2s,border-color .2s;
+  }
+  .zone.on{background:var(--wash-on);border-color:var(--line-on);transform:scale(1.06)}
+  /* 焊在自己的边上，不贴边的那三个角是圆的，和刘海一样 */
+  #right{border-radius:20px 0 0 20px;right:0}
+  #left{border-radius:0 20px 20px 0;left:0}
+  #top{border-radius:0 0 20px 20px;top:0}
+  #bottom{border-radius:20px 20px 0 0;bottom:0}
+  @media (prefers-reduced-motion: reduce){.zone{transition:none}}
+</style>
+</head>
+<body>
+<div class="zone" id="left"></div>
+<div class="zone" id="right"></div>
+<div class="zone" id="top"></div>
+<div class="zone" id="bottom"></div>
+<script>
+const invoke = window.__TAURI__.core.invoke;
+const listen = window.__TAURI__.event.listen;
+
+/* 同一个形状，平边时横过来：竖边是一列，平边是一行。depth/length 是刘海竖起时的尺寸。 */
+function draw(z){
+  if(!z) return;
+  const depth=Math.round(z.depth), length=Math.round(z.length);
+  for(const edge of ['left','right']){
+    const el=document.getElementById(edge);
+    el.style.width=depth+'px'; el.style.height=length+'px';
+    el.style.top=Math.round((z.h-length)/2)+'px';
+  }
+  for(const edge of ['top','bottom']){
+    const el=document.getElementById(edge);
+    el.style.width=length+'px'; el.style.height=depth+'px';
+    el.style.left=Math.round((z.w-length)/2)+'px';
+  }
+  for(const edge of ['left','right','top','bottom'])
+    document.getElementById(edge).classList.toggle('on',edge===z.target);
+}
+/* 跟随系统外观（Rust 不注入主题脚本，这里直接问系统） */
+if(window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches)
+  document.documentElement.setAttribute('data-theme','light');
+window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').addEventListener('change',e=>{
+  document.documentElement.setAttribute('data-theme', e.matches ? 'light' : 'dark');
+});
+
+listen('zones',e=>draw(e.payload)).catch(()=>{});
+invoke('get_zones').then(draw).catch(()=>{});
+</script>
+</body>
+</html>

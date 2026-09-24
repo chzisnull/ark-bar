@@ -518,18 +518,20 @@ pub fn peek_volcengine_usage() -> Option<ProviderUsageData> {
 }
 
 fn get_volc_plan_tier() -> Option<String> {
-    if let Ok(home) = std::env::var("HOME") {
-        let p = std::path::Path::new(&home).join(".arkcli/config.yaml");
-        if let Ok(content) = std::fs::read_to_string(p) {
-            for line in content.lines() {
-                let trimmed = line.trim();
-                if trimmed.starts_with("plan_tier:") {
-                    let parts: Vec<&str> = trimmed.split(':').collect();
-                    if parts.len() >= 2 {
-                        let tier = parts[1].trim().trim_matches('"').trim_matches('\'').to_string();
-                        if !tier.is_empty() {
-                            return Some(tier);
-                        }
+    // Windows 上没有 HOME，用 USERPROFILE（否则档位永远读不到）
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()?;
+    let p = std::path::Path::new(&home).join(".arkcli/config.yaml");
+    if let Ok(content) = std::fs::read_to_string(p) {
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("plan_tier:") {
+                let parts: Vec<&str> = trimmed.split(':').collect();
+                if parts.len() >= 2 {
+                    let tier = parts[1].trim().trim_matches('"').trim_matches('\'').to_string();
+                    if !tier.is_empty() {
+                        return Some(tier);
                     }
                 }
             }

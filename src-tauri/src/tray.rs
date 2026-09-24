@@ -1,16 +1,15 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::{
     image::Image,
+    Emitter,
     menu::{ContextMenu, Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager, WebviewWindow,
 };
-use tauri_plugin_positioner::{Position, WindowExt};
 
-static FLOAT_PLACED: AtomicBool = AtomicBool::new(false);
+use crate::notch;
+
 static LAST_TRAY_TITLE: Mutex<String> = Mutex::new(String::new());
-static NOTCH_EDGE: Mutex<String> = Mutex::new(String::new());
 
 pub fn show_settings_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -21,18 +20,9 @@ pub fn show_settings_window(app: &AppHandle) {
 }
 
 pub fn reveal_float_window(window: &WebviewWindow) {
-    // Only snap to the default corner the first time. After the user drags
-    // the widget, keep that position across hide/show and size changes.
-    if !FLOAT_PLACED.swap(true, Ordering::SeqCst) {
-        let edge = NOTCH_EDGE.lock().map(|g| g.clone()).unwrap_or_else(|_| "right".into());
-        if edge == "top" {
-            let _ = window.set_size(tauri::LogicalSize::new(700.0, 480.0));
-            let _ = window.move_window(Position::TopCenter);
-        } else {
-            let _ = window.set_size(tauri::LogicalSize::new(440.0, 680.0));
-            let _ = window.move_window(Position::RightCenter);
-        }
-    }
+    // 位置由 notch::place_notch 决定：贴着当前边、按记住的沿边比例摆放。
+    // 不再「只摆第一次」——那样拖动或换边后的残留位置会被一直留着。
+    notch::place_notch(window.app_handle());
     let _ = window.show();
     let _ = window.set_focus();
 }
@@ -184,6 +174,14 @@ pub fn show_main_window(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 打开设置窗口并直接落到「安装 / 授权」引导：刘海卡片上未连接时的那个按钮用它。
+#[tauri::command]
+pub fn open_onboarding(app: AppHandle) -> Result<(), String> {
+    show_settings_window(&app);
+    let _ = app.emit_to("main", "open_onboarding", ());
+    Ok(())
+}
+
 #[tauri::command]
 pub fn hide_window(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("main") {
@@ -217,47 +215,13 @@ pub fn is_float_window_open(app: AppHandle) -> bool {
     }
 }
 
-static DRAG_SESSION: std::sync::Mutex<Option<(i32, i32, f64)>> = std::sync::Mutex::new(None);
-
-#[tauri::command]
-pub fn start_drag_move(window: tauri::WebviewWindow) -> Result<(), String> {
-    let scale = window.scale_factor().unwrap_or(1.0);
-    let pos = window.outer_position().map_err(|e| e.to_string())?;
-    let mut session = DRAG_SESSION.lock().map_err(|e| e.to_string())?;
-    *session = Some((pos.x, pos.y, scale));
-    Ok(())
-}
-
-#[tauri::command]
-pub fn update_drag_move(window: tauri::WebviewWindow, total_dx: f64, total_dy: f64) -> Result<(), String> {
-    let session = DRAG_SESSION.lock().map_err(|e| e.to_string())?;
-    if let Some((start_x, start_y, scale)) = *session {
-        let phys_dx = (total_dx * scale).round() as i32;
-        let phys_dy = (total_dy * scale).round() as i32;
-        let target_pos = tauri::PhysicalPosition::new(start_x + phys_dx, start_y + phys_dy);
-        window.set_position(target_pos).map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
-#[tauri::command]
-pub fn end_drag_move() -> Result<(), String> {
-    if let Ok(mut session) = DRAG_SESSION.lock() {
-        *session = None;
-    }
-    Ok(())
-}
-
 #[tauri::command]
 pub fn set_float_window_size(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("float") {
-        let pos = window.outer_position().ok();
         let _ = window.set_size(tauri::LogicalSize::new(width, height));
-        if let Some(p) = pos {
-            let _ = window.set_position(p);
-        }
-        FLOAT_PLACED.store(true, Ordering::SeqCst);
     }
+    // 尺寸变了要重新贴边，否则窗口长出来的一截会顶到屏幕外
+    notch::place_notch(&app);
     Ok(())
 }
 
@@ -265,42 +229,6 @@ pub fn set_float_window_size(app: AppHandle, width: f64, height: f64) -> Result<
 pub fn set_main_window_size(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.set_size(tauri::LogicalSize::new(width, height));
-    }
-    Ok(())
-}
-
-#[tauri::command]
-pub fn set_notch_edge(app: AppHandle, edge: String) -> Result<(), String> {
-    if let Ok(mut lock) = NOTCH_EDGE.lock() {
-        *lock = edge.clone();
-    }
-    if let Some(window) = app.get_webview_window("float") {
-        if edge == "top" {
-            let _ = window.set_size(tauri::LogicalSize::new(700.0, 480.0));
-            let _ = window.move_window(Position::TopCenter);
-        } else {
-            let _ = window.set_size(tauri::LogicalSize::new(440.0, 680.0));
-            let _ = window.move_window(Position::RightCenter);
-        }
-        FLOAT_PLACED.store(true, Ordering::SeqCst);
-    }
-    Ok(())
-}
-
-#[tauri::command]
-pub fn recentre_notch(app: AppHandle, edge: Option<String>) -> Result<(), String> {
-    let current_edge = edge.unwrap_or_else(|| {
-        NOTCH_EDGE.lock().map(|g| g.clone()).unwrap_or_else(|_| "right".into())
-    });
-    if let Some(window) = app.get_webview_window("float") {
-        if current_edge == "top" {
-            let _ = window.set_size(tauri::LogicalSize::new(700.0, 480.0));
-            let _ = window.move_window(Position::TopCenter);
-        } else {
-            let _ = window.set_size(tauri::LogicalSize::new(440.0, 680.0));
-            let _ = window.move_window(Position::RightCenter);
-        }
-        FLOAT_PLACED.store(true, Ordering::SeqCst);
     }
     Ok(())
 }
