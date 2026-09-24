@@ -34,12 +34,11 @@ pub fn run() {
                     // 菜单栏图标被系统挤掉或被用户隐藏时，快捷键是常驻入口；
                     // 行为与托盘左键一致：显则隐、隐则显
                     if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                        if let Some(window) = app.get_webview_window("float") {
-                            if window.is_visible().unwrap_or(false) {
-                                let _ = window.hide();
-                            } else {
-                                tray::reveal_float_window(&window);
-                            }
+                        // 整队显隐：一块屏一个刘海，快捷键是它们的总开关
+                        if tray::is_float_window_open(app.clone()) {
+                            let _ = tray::close_float_window(app.clone());
+                        } else if let Some(window) = app.get_webview_window("float") {
+                            tray::reveal_float_window(&window);
                         }
                     }
                 })
@@ -86,8 +85,10 @@ pub fn run() {
             // 刘海右键菜单（刷新 / 保持展开 / 偏好设置 / 退出）
             notch::setup_menu(app.handle());
 
-            // 先读回上次的贴边位置与沿边落点，再摆第一下（否则会先摆右边缘再跳）
+            // 先读回上次的贴边位置、沿边落点与覆盖范围，再摆第一下（否则会先摆右边缘再跳）
             notch::init_state(app.handle());
+            // 按覆盖范围把每块屏上的刘海补齐（主显示器 / 所有显示器）
+            notch::reconcile_fleet(app.handle());
 
             // 全局快捷键 ⌘/Ctrl+Shift+A 呼出主面板。注册失败（如与其他应用
             // 冲突）只降级不崩溃：悬浮窗右键菜单仍是兜底入口。
@@ -147,6 +148,8 @@ pub fn run() {
             notch::begin_move,
             notch::end_notch_drag,
             notch::set_notch_mode,
+            notch::set_notch_scope,
+            notch::get_notch_scope,
             notch::show_notch_menu,
             dropzones::get_zones,
             notch_monitor::set_hot,

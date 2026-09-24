@@ -41,15 +41,6 @@ pub fn edge_at(x: f64, y: f64, w: f64, h: f64) -> &'static str {
     }
 }
 
-fn same_screen(a: &Screen, b: &Screen) -> bool {
-    (a.x, a.y, a.w, a.h) == (b.x, b.y, b.w, b.h)
-}
-
-/// 两块屏幕是不是同一块（按位置尺寸，而不是平台不一定给的名字）。
-pub fn same(a: &Screen, b: &Screen) -> bool {
-    same_screen(a, b)
-}
-
 /// 把覆盖层钉在 `screen` 的物理边界上（绝对坐标，跨屏也准）。
 /// 窗口按逻辑尺寸建，再由物理像素摆正一次——换了缩放比的屏幕，平台可能按自己的理解换算。
 fn pin(w: &tauri::WebviewWindow, screen: &Screen) {
@@ -103,21 +94,6 @@ pub fn show(app: &AppHandle, screen: &Screen, zones: &Zones) {
     }
 }
 
-/// 指针跨到另一块屏幕上时，把落区一起带过去（先藏起来挪，避免看到它被平台缩放的过程）。
-pub fn relocate(app: &AppHandle, screen: &Screen, zones: &Zones) {
-    let Some(w) = app.get_webview_window(LABEL) else {
-        return show(app, screen, zones);
-    };
-    if let Ok(mut cur) = CURRENT.lock() {
-        *cur = Some(zones.clone());
-    }
-    let _ = w.hide();
-    pin(&w, screen);
-    let _ = w.emit_to(LABEL, "zones", zones);
-    std::thread::sleep(std::time::Duration::from_millis(40));
-    let _ = w.show();
-}
-
 pub fn retarget(app: &AppHandle, zones: &Zones) {
     if let Ok(mut cur) = CURRENT.lock() {
         *cur = Some(zones.clone());
@@ -138,24 +114,4 @@ pub fn hide(app: &AppHandle) {
 #[tauri::command]
 pub fn get_zones() -> Option<Zones> {
     CURRENT.lock().ok().and_then(|g| g.clone())
-}
-
-pub fn screen_of(app: &AppHandle, x: f64, y: f64) -> Option<Screen> {
-    let w = app.get_webview_window("float")?;
-    let monitors = w.available_monitors().ok()?;
-    monitors
-        .iter()
-        .map(Screen::of)
-        .find(|s| {
-            x >= s.x as f64
-                && x < (s.x + s.w) as f64
-                && y >= s.y as f64
-                && y < (s.y + s.h) as f64
-        })
-        .or_else(|| {
-            w.current_monitor()
-                .ok()
-                .flatten()
-                .map(|m| Screen::of(&m))
-        })
 }

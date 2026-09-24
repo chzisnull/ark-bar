@@ -138,6 +138,22 @@ async function setNotchEdge(edge: NotchEdge) {
   }
 }
 
+// 刘海覆盖范围（对齐 Codenotch 的 NotchScreenScope）：主显示器 / 所有显示器
+type NotchScope = 'main' | 'all';
+const notchScope = ref<NotchScope>(
+  (localStorage.getItem('arkbar_notch_scope') as NotchScope) || 'main'
+);
+
+async function setNotchScope(scope: NotchScope) {
+  notchScope.value = scope;
+  localStorage.setItem('arkbar_notch_scope', scope);
+  try {
+    await invoke('set_notch_scope', { scope });
+  } catch (e) {
+    console.error('Failed to set notch scope:', e);
+  }
+}
+
 async function recentreNotch() {
   try {
     await invoke('recentre_notch', { edge: notchEdge.value });
@@ -762,6 +778,48 @@ async function toggleNotchWindow() {
             </div>
             <p class="text-[11px] text-neutral-500 leading-relaxed">
               顶部边缘贴合 MacBook 刘海或菜单栏中央；拖动手柄可自由沿边缘微调，点击“复位居中”可瞬间重置至正中。
+            </p>
+          </div>
+
+          <!-- 刘海覆盖范围（Codenotch 的 NotchScreenScope） -->
+          <div class="bg-[#202126] border border-white/5 rounded-xl p-4 space-y-3">
+            <div>
+              <h3 class="text-sm font-semibold text-white">刘海显示范围</h3>
+              <p class="text-xs text-neutral-400 mt-0.5">每块屏幕各一个刘海，还是只留带菜单栏那一块</p>
+            </div>
+
+            <div class="grid grid-cols-2 gap-3">
+              <button
+                @click="setNotchScope('main')"
+                class="p-3 rounded-lg border text-left transition-all cursor-pointer flex items-center gap-3"
+                :class="notchScope === 'main' ? 'border-[#0a84ff] bg-[#0a84ff]/10 text-white' : 'border-white/5 bg-white/5 text-neutral-400 hover:text-white'"
+              >
+                <div class="w-9 h-7 rounded border border-white/20 bg-black/40 flex items-center justify-center shrink-0">
+                  <div class="w-4 h-2.5 bg-[#0a84ff] rounded-sm" />
+                </div>
+                <div>
+                  <div class="text-sm font-bold">主显示器</div>
+                  <div class="text-[11px] text-neutral-400 mt-0.5">只有带菜单栏那一块</div>
+                </div>
+              </button>
+
+              <button
+                @click="setNotchScope('all')"
+                class="p-3 rounded-lg border text-left transition-all cursor-pointer flex items-center gap-3"
+                :class="notchScope === 'all' ? 'border-[#0a84ff] bg-[#0a84ff]/10 text-white' : 'border-white/5 bg-white/5 text-neutral-400 hover:text-white'"
+              >
+                <div class="w-9 h-7 rounded border border-white/20 bg-black/40 flex items-center justify-center gap-0.5 shrink-0">
+                  <div class="w-2 h-2.5 bg-[#0a84ff] rounded-sm" />
+                  <div class="w-2 h-2.5 bg-[#0a84ff]/60 rounded-sm" />
+                </div>
+                <div>
+                  <div class="text-sm font-bold">所有显示器</div>
+                  <div class="text-[11px] text-neutral-400 mt-0.5">每块屏各一个，各开各的</div>
+                </div>
+              </button>
+            </div>
+            <p class="text-[11px] text-neutral-500 leading-relaxed">
+              与 Codenotch 一致：贴边位置、沿边落点、展开状态都是整队共享，但「悬停哪块屏就展开哪块」是每块屏自己的事。
             </p>
           </div>
 

@@ -19,12 +19,34 @@ pub fn show_settings_window(app: &AppHandle) {
     }
 }
 
+/// 显示全部刘海（每块屏一个）。位置由 notch::place_notch 决定：贴着当前边、
+/// 按记住的沿边比例摆放，不再「只摆第一次」。
 pub fn reveal_float_window(window: &WebviewWindow) {
-    // 位置由 notch::place_notch 决定：贴着当前边、按记住的沿边比例摆放。
-    // 不再「只摆第一次」——那样拖动或换边后的残留位置会被一直留着。
-    notch::place_notch(window.app_handle());
-    let _ = window.show();
-    let _ = window.set_focus();
+    let app = window.app_handle();
+    notch::reconcile_fleet(app);
+    notch::place_notch(app);
+    for label in notch::notch_labels(app) {
+        if let Some(w) = app.get_webview_window(&label) {
+            let _ = w.show();
+        }
+    }
+}
+
+/// 所有刘海是否都藏着（托盘/快捷键判断用：只要有一个可见就算可见）。
+fn any_notch_visible(app: &AppHandle) -> bool {
+    notch::notch_labels(app).iter().any(|l| {
+        app.get_webview_window(l)
+            .and_then(|w| w.is_visible().ok())
+            .unwrap_or(false)
+    })
+}
+
+fn hide_all_notches(app: &AppHandle) {
+    for label in notch::notch_labels(app) {
+        if let Some(w) = app.get_webview_window(&label) {
+            let _ = w.hide();
+        }
+    }
 }
 
 pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
@@ -56,12 +78,10 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     show_settings_window(app);
                 }
                 "toggle_float" => {
-                    if let Some(window) = app.get_webview_window("float") {
-                        if window.is_visible().unwrap_or(false) {
-                            let _ = window.hide();
-                        } else {
-                            reveal_float_window(&window);
-                        }
+                    if any_notch_visible(app) {
+                        hide_all_notches(app);
+                    } else if let Some(window) = app.get_webview_window("float") {
+                        reveal_float_window(&window);
                     }
                 }
                 _ => {}
@@ -84,12 +104,10 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     // 左键：显隐切换右侧屏幕刘海
                     (MouseButton::Left, MouseButtonState::Up) => {
                         let app = tray.app_handle();
-                        if let Some(window) = app.get_webview_window("float") {
-                            if window.is_visible().unwrap_or(false) {
-                                let _ = window.hide();
-                            } else {
-                                reveal_float_window(&window);
-                            }
+                        if any_notch_visible(app) {
+                            hide_all_notches(app);
+                        } else if let Some(window) = app.get_webview_window("float") {
+                            reveal_float_window(&window);
                         }
                     }
                     // 右键：在当前光标处手动弹出菜单（菜单未挂载到状态栏项）。
@@ -200,27 +218,20 @@ pub fn open_float_window(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub fn close_float_window(app: AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("float") {
-        let _ = window.hide();
-    }
+    hide_all_notches(&app);
     Ok(())
 }
 
 #[tauri::command]
 pub fn is_float_window_open(app: AppHandle) -> bool {
-    if let Some(window) = app.get_webview_window("float") {
-        window.is_visible().unwrap_or(false)
-    } else {
-        false
-    }
+    any_notch_visible(&app)
 }
 
 #[tauri::command]
 pub fn set_float_window_size(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("float") {
-        let _ = window.set_size(tauri::LogicalSize::new(width, height));
-    }
-    // 尺寸变了要重新贴边，否则窗口长出来的一截会顶到屏幕外
+    // 尺寸由每块屏上的刘海自己按边决定（见 notch::notch_window_size）；
+    // 这里只负责整队重新贴边，避免长出来的一截顶到屏幕外。
+    let _ = (width, height);
     notch::place_notch(&app);
     Ok(())
 }
