@@ -199,6 +199,10 @@ interface ProviderActivity {
   detail: string;
   since: number;
 }
+// 有新版本时后台会广播（不再等用户点「检查更新」）：orb 上点一个小圆点，卡片里给一行
+interface UpdateInfoLite { has_update: boolean; latest_version: string; release_notes?: string }
+const pendingUpdate = ref<UpdateInfoLite | null>(null);
+
 const activityMap = ref<Record<string, ProviderActivity>>({});
 const nowTick = ref(Date.now());
 let activityTimer: any = null;
@@ -739,6 +743,13 @@ function handleNotchContextMenu(e: MouseEvent) {
     });
 }
 
+// 去更新：打开设置窗口并弹出更新弹窗
+function openUpdate() {
+  activeHoverId.value = null;
+  invoke('open_update_modal').catch(() => {});
+  scheduleFold();
+}
+
 // 去安装/授权：打开设置窗口并直接落到引导（安装 arkcli / SSO 登录）那一屏
 function openOnboarding() {
   activeHoverId.value = null;
@@ -791,6 +802,7 @@ let unlistenTabs: (() => void) | null = null;
 let unlistenEdge: (() => void) | null = null;
 let unlistenActivity: (() => void) | null = null;
 let unlistenAlong: (() => void) | null = null;
+let unlistenUpdate: (() => void) | null = null;
 let unlistenMove: (() => void) | null = null;
 let unlistenDrag: (() => void) | null = null;
 let unlistenRefresh: (() => void) | null = null;
@@ -916,6 +928,19 @@ onMounted(async () => {
     scheduleFold();
   });
 
+  // 后台发现新版本：orb 上亮个点，卡片里提示一行
+  unlistenUpdate = await listen<UpdateInfoLite>('update-available', (event) => {
+    if (event.payload?.has_update) {
+      pendingUpdate.value = event.payload;
+    }
+  });
+  // 挂载时先问一次缓存里的结果（后台线程可能已经查过了）
+  invoke<UpdateInfoLite>('check_for_updates', { force: false })
+    .then((info) => {
+      if (info?.has_update) pendingUpdate.value = info;
+    })
+    .catch(() => {});
+
   // 右键菜单
   unlistenRefresh = await listen('notch_refresh', () => {
     // 悬停中的厂商优先；没有就用刘海里的第一个
@@ -972,6 +997,7 @@ onUnmounted(() => {
   if (unlistenEdge) unlistenEdge();
   if (unlistenActivity) unlistenActivity();
   if (unlistenAlong) unlistenAlong();
+  if (unlistenUpdate) unlistenUpdate();
   if (unlistenMove) unlistenMove();
   if (unlistenDrag) unlistenDrag();
   if (unlistenRefresh) unlistenRefresh();
@@ -1050,6 +1076,23 @@ onUnmounted(() => {
 
           <!-- Card Body: Groups & Limit Rows (Fits naturally without clunky scrollbars!) -->
           <div class="space-y-2.5">
+            <!-- 有新版本：主动提示（后台巡检发现，不用自己去点检查更新） -->
+            <div
+              v-if="pendingUpdate"
+              class="bg-[#0a84ff]/10 rounded-xl p-3 border border-[#0a84ff]/30 flex items-center justify-between gap-2"
+            >
+              <div class="text-[11px] text-[#e8e8ea] leading-snug">
+                有新版本 <span class="font-semibold">v{{ pendingUpdate.latest_version }}</span> 可用
+              </div>
+              <button
+                type="button"
+                class="shrink-0 px-2.5 py-1 rounded-lg text-[11px] font-medium bg-[#0a84ff] text-white hover:bg-[#0a84ff]/85 transition-colors cursor-pointer"
+                @click.stop="openUpdate"
+              >
+                去更新
+              </button>
+            </div>
+
             <!-- 未连接：说清原因 + 一键去安装/授权（不装 CLI、不授权就永远刷不出来） -->
             <div
               v-if="activeHoverData && !activeHoverData.is_connected"
@@ -1234,10 +1277,10 @@ onUnmounted(() => {
         id="orb"
         class="handle"
         :class="[
-          { 'hover': isHoveringOrb, 'is-folded-handle': isFolded },
+          { 'hover': isHoveringOrb, 'is-folded-handle': isFolded, 'has-update': !!pendingUpdate },
           notchEdge === 'top' ? 'is-edge-top' : 'is-edge-right'
         ]"
-        title="偏好设置"
+        :title="pendingUpdate ? `偏好设置 · 有新版本 v${pendingUpdate.latest_version}` : '偏好设置'"
         @click="openSettings"
         @mouseenter="isHoveringOrb = true"
         @mouseleave="isHoveringOrb = false"
@@ -1496,6 +1539,20 @@ onUnmounted(() => {
 }
 
 /* Codenotch：悬停不放大（否则指针一靠近就「粘」上去），按下才缩到 .93 给回执 */
+/* 有新版本：设置齿轮上点一个小圆点（收起态看不到 orb，展开就能看见） */
+.handle.has-update::after {
+  content: '';
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  background: #ff9f0a;
+  box-shadow: 0 0 6px rgba(255, 159, 10, 0.9);
+  z-index: 2;
+}
+
 .pct.is-offline {
   color: #ff9f0a;
 }

@@ -70,6 +70,9 @@ pub fn run() {
                 std::mem::forget(activity);
             }
 
+            // 后台更新巡检：发现新版本主动提示（不再靠用户点「检查更新」）
+            background::spawn_update_watch(app.handle().clone());
+
             // Native periodic usage sync (webview timers are suspended while
             // the popover window is hidden).
             background::spawn(app.handle().clone());
@@ -134,6 +137,7 @@ pub fn run() {
             updater::install_app_update,
             background::set_background_interval,
             background::set_tray_prefs,
+            background::set_auto_update,
             provider_manager::get_unified_usage,
             provider_manager::peek_cached_usage,
             provider_manager::get_all_providers_usage,
@@ -143,6 +147,7 @@ pub fn run() {
             tray::set_tray_icon_visible,
             tray::show_main_window,
             tray::open_onboarding,
+            tray::open_update_modal,
             tray::hide_window,
             tray::open_float_window,
             tray::close_float_window,

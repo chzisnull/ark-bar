@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue';
+import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import type {
   EnvironmentStatus,
@@ -309,6 +310,11 @@ onMounted(async () => {
   } catch {}
 
   await syncNotchScope();
+
+  // 刘海上的「去更新」按钮：直接弹更新弹窗（顺便实时查一次，避免拿到过期结论）
+  listen('open_update', () => {
+    checkForUpdate();
+  });
 });
 
 async function saveTeamoKey() {
@@ -353,6 +359,14 @@ const alertReset = ref(true);
 // Update Modal & checking
 const isCheckingUpdate = ref(false);
 const showUpdateModal = ref(false);
+// 自动检查更新（默认开）：与 Rust 后台巡检线程同源
+const autoUpdate = ref<boolean>(localStorage.getItem('arkbar_auto_update') !== 'false');
+
+function toggleAutoUpdate() {
+  autoUpdate.value = !autoUpdate.value;
+  localStorage.setItem('arkbar_auto_update', autoUpdate.value ? 'true' : 'false');
+  invoke('set_auto_update', { enabled: autoUpdate.value }).catch(() => {});
+}
 const currentUpdateInfo = ref<UpdateInfo | null>(props.initialUpdateInfo || null);
 const updateCheckStatus = ref<'idle' | 'latest' | 'error'>('idle');
 const lastCheckedTime = ref<string>('');
@@ -931,6 +945,21 @@ async function toggleNotchWindow() {
               :class="autostartEnabled ? 'bg-[#0a84ff]' : 'bg-neutral-700'"
             >
               <span class="w-5 h-5 rounded-full bg-white shadow-md transform transition-transform" :class="autostartEnabled ? 'translate-x-4' : 'translate-x-0'" />
+            </button>
+          </div>
+
+          <!-- 自动检查更新 -->
+          <div class="bg-[#202126] border border-white/5 rounded-xl p-4 flex items-center justify-between">
+            <div>
+              <h3 class="text-sm font-semibold text-white">自动检查更新</h3>
+              <p class="text-xs text-neutral-400 mt-0.5">启动后与每 6 小时各查一次，发现新版本在刘海上提示（关掉则只在你手动点击时检查）</p>
+            </div>
+            <button
+              @click="toggleAutoUpdate"
+              class="w-10 h-6 rounded-full transition-colors relative flex items-center px-0.5 shrink-0"
+              :class="autoUpdate ? 'bg-[#0a84ff]' : 'bg-neutral-700'"
+            >
+              <span class="w-5 h-5 rounded-full bg-white shadow-md transform transition-transform" :class="autoUpdate ? 'translate-x-4' : 'translate-x-0'" />
             </button>
           </div>
 

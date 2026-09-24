@@ -259,6 +259,8 @@ function updateTrayTitle() {
 // 端，并监听后台线程广播的 usage-updated 事件更新界面与托盘。
 function syncBackgroundPrefs() {
   invoke('set_background_interval', { minutes: refreshInterval.value }).catch(() => {});
+  // 自动检查更新（默认开）：关掉之后后台巡检真的不再发起请求
+  invoke('set_auto_update', { enabled: localStorage.getItem('arkbar_auto_update') !== 'false' }).catch(() => {});
   invoke('set_tray_prefs', {
     target: trayTarget.value,
     percentMode: trayPercentMode.value,
@@ -344,6 +346,11 @@ onMounted(() => {
     updateTrayTitle();
   }).then((un) => {
     unlistenUsage = un;
+  });
+
+  // 后台巡检发现新版本：把信息交给设置窗口（它负责弹更新弹窗）
+  listen<UpdateInfo>('update-available', (event) => {
+    if (event.payload?.has_update) updateInfo.value = event.payload;
   });
 
   // 刘海卡片上的「安装 / 授权」按钮：切到引导视图（装 arkcli / SSO 登录都在那一屏）

@@ -192,6 +192,14 @@ pub fn show_main_window(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 打开设置窗口并弹出更新弹窗：刘海提示「有新版本」时的按钮用它。
+#[tauri::command]
+pub fn open_update_modal(app: AppHandle) -> Result<(), String> {
+    show_settings_window(&app);
+    let _ = app.emit_to("main", "open_update", ());
+    Ok(())
+}
+
 /// 打开设置窗口并直接落到「安装 / 授权」引导：刘海卡片上未连接时的那个按钮用它。
 #[tauri::command]
 pub fn open_onboarding(app: AppHandle) -> Result<(), String> {

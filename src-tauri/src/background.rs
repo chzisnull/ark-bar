@@ -26,6 +26,44 @@ static TRAY_PERCENT_MODE: AtomicU8 = AtomicU8::new(0);
 static PREFS_SYNCED: AtomicBool = AtomicBool::new(false);
 /// "仅手动"切回自动模式时置位，触发立即补刷一轮。
 static REFRESH_NOW: AtomicBool = AtomicBool::new(false);
+/// 是否自动检查更新（前端设置同步过来，默认开）
+static AUTO_UPDATE: AtomicBool = AtomicBool::new(true);
+
+#[tauri::command]
+pub fn set_auto_update(enabled: bool) {
+    AUTO_UPDATE.store(enabled, Ordering::SeqCst);
+}
+
+/// 更新巡检：启动 15 秒后先查一次，之后每 6 小时一次。
+///
+/// 以前只有用户在设置里点「在线检查更新」才会知道有新版本——发布完得靠人自己去点。
+/// 这里发现新版本就广播 `update-available`，刘海与设置窗口各自提示；
+/// 同一个版本一个会话里只提示一次，不反复打扰。
+pub fn spawn_update_watch(app: AppHandle) {
+    std::thread::spawn(move || {
+        // 让启动那阵子（拉用量、摆刘海）先过去
+        std::thread::sleep(Duration::from_secs(15));
+        let mut notified: Vec<String> = Vec::new();
+        loop {
+            if AUTO_UPDATE.load(Ordering::SeqCst) {
+                match crate::ark_cli::check_for_updates_sync(false) {
+                    Ok(info) => {
+                        if info.has_update && !notified.contains(&info.latest_version) {
+                            notified.push(info.latest_version.clone());
+                            crate::applog::log(&format!(
+                                "update available: {} -> {}",
+                                info.current_version, info.latest_version
+                            ));
+                            let _ = app.emit("update-available", &info);
+                        }
+                    }
+                    Err(e) => crate::applog::log(&format!("update check failed: {e}")),
+                }
+            }
+            std::thread::sleep(Duration::from_secs(6 * 3600));
+        }
+    });
+}
 
 #[tauri::command]
 pub fn set_background_interval(minutes: u64) -> Result<(), String> {

@@ -1,6 +1,6 @@
 [package]
 name = "ark-bar"
-version = "0.6.1"
+version = "0.6.2"
 description = "火山方舟 Coding Plan 菜单栏配额监控小工具"
 authors = ["chzisnull"]
 edition = "2021"

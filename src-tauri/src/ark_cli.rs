@@ -902,7 +902,7 @@ pub async fn check_for_updates(force: Option<bool>) -> Result<UpdateInfo, String
         .map_err(|e| e.to_string())?
 }
 
-fn check_for_updates_sync(force: bool) -> Result<UpdateInfo, String> {
+pub(crate) fn check_for_updates_sync(force: bool) -> Result<UpdateInfo, String> {
     let current_version = env!("CARGO_PKG_VERSION").to_string();
     let repo = "chzisnull/ark-bar";
 
