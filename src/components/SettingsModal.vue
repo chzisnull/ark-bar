@@ -177,10 +177,24 @@ async function recentreNotch() {
 
 const showTrayIcon = ref<boolean>(localStorage.getItem('arkbar_show_tray') === 'true');
 
+// 菜单栏图标开启后才有意义：点击图标弹出用量，而不是悬停顶部/右侧刘海
+const clickTrayForUsage = ref<boolean>(localStorage.getItem('arkbar_tray_click_usage') === 'true');
+
 function toggleTrayIcon() {
   showTrayIcon.value = !showTrayIcon.value;
   localStorage.setItem('arkbar_show_tray', showTrayIcon.value ? 'true' : 'false');
   invoke('set_tray_icon_visible', { visible: showTrayIcon.value }).catch(() => {});
+  if (!showTrayIcon.value && clickTrayForUsage.value) {
+    // 图标都没了，点击模式一并关掉，避免刘海被静默藏起来
+    setClickTrayForUsage(false);
+  }
+}
+
+function setClickTrayForUsage(enabled: boolean) {
+  clickTrayForUsage.value = enabled;
+  localStorage.setItem('arkbar_tray_click_usage', enabled ? 'true' : 'false');
+  window.dispatchEvent(new StorageEvent('storage', { key: 'arkbar_tray_click_usage' }));
+  invoke('set_tray_click_usage', { enabled }).catch(() => {});
 }
 
 // Connected providers list
@@ -870,12 +884,36 @@ onUnmounted(() => {
 
             <button
               @click="toggleTrayIcon"
-              class="w-10 h-6 rounded-full transition-colors relative flex items-center px-0.5"
+              class="w-10 h-6 rounded-full transition-colors relative flex items-center px-0.5 shrink-0"
               :class="showTrayIcon ? 'bg-[#0a84ff]' : 'bg-neutral-700'"
             >
               <span
                 class="w-5 h-5 rounded-full bg-white shadow-md transform transition-transform"
                 :class="showTrayIcon ? 'translate-x-4' : 'translate-x-0'"
+              />
+            </button>
+          </div>
+
+          <!-- 仅在菜单栏图标开启后出现：点击才显示用量 -->
+          <div
+            v-if="showTrayIcon"
+            class="bg-[#202126] border border-white/5 rounded-xl p-4 flex items-center justify-between"
+          >
+            <div class="pr-4">
+              <h3 class="text-sm font-semibold text-white">点击菜单栏图标才显示用量</h3>
+              <p class="text-xs text-neutral-400 mt-0.5">
+                开启后，用量不再随鼠标悬停顶部或右侧刘海展开；改为点击菜单栏图标弹出，再点一次收起
+              </p>
+            </div>
+
+            <button
+              @click="setClickTrayForUsage(!clickTrayForUsage)"
+              class="w-10 h-6 rounded-full transition-colors relative flex items-center px-0.5 shrink-0"
+              :class="clickTrayForUsage ? 'bg-[#0a84ff]' : 'bg-neutral-700'"
+            >
+              <span
+                class="w-5 h-5 rounded-full bg-white shadow-md transform transition-transform"
+                :class="clickTrayForUsage ? 'translate-x-4' : 'translate-x-0'"
               />
             </button>
           </div>

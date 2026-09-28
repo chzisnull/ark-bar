@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "ArkBar",
-  "version": "0.6.3",
+  "version": "0.7.0",
   "identifier": "com.chzisnull.arkbar",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -43,6 +43,22 @@
         "skipTaskbar": true,
         "shadow": false,
         "dragDropEnabled": false
+      },
+      {
+        "label": "usage",
+        "title": "ArkBar 用量",
+        "url": "index.html#usage",
+        "width": 400,
+        "height": 620,
+        "resizable": false,
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "visible": false,
+        "skipTaskbar": true,
+        "shadow": true,
+        "focus": true
       }
     ],
     "security": {

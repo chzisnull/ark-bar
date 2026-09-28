@@ -112,6 +112,9 @@ const notchMode = ref<'hover' | 'always' | 'hidden'>(
   (localStorage.getItem('arkbar_notch_mode') as any) || 'hover'
 );
 
+// 点击菜单栏图标才显示用量：顶部/右侧悬停整段关掉
+const clickTrayForUsage = ref<boolean>(localStorage.getItem('arkbar_tray_click_usage') === 'true');
+
 // Edge placement: 'right' (default) | 'top'
 export type NotchEdge = 'right' | 'top';
 const notchEdge = ref<NotchEdge>(
@@ -287,7 +290,7 @@ let hotRafId: number | null = null;
 let lastHotKey: string | null = null;
 
 function computeHotPayload(): { rects: number[][]; expanded: boolean } {
-  if (notchMode.value === 'hidden') {
+  if (notchMode.value === 'hidden' || clickTrayForUsage.value) {
     return { rects: [], expanded: false };
   }
 
@@ -375,7 +378,7 @@ function reportHot() {
 
 // Unfold the notch smoothly
 function unfold() {
-  if (notchMode.value === 'hidden') return;
+  if (notchMode.value === 'hidden' || clickTrayForUsage.value) return;
   if (foldTimer) {
     clearTimeout(foldTimer);
     foldTimer = null;
@@ -850,6 +853,7 @@ let unlistenMove: (() => void) | null = null;
 let unlistenDrag: (() => void) | null = null;
 let unlistenRefresh: (() => void) | null = null;
 let unlistenKeepOpen: (() => void) | null = null;
+let unlistenClickUsage: (() => void) | null = null;
 
 watch(activeHoverId, (newId) => {
   if (newId && notchPillRef.value) {
@@ -946,6 +950,20 @@ onMounted(async () => {
       providerTabs.value = loadProviderTabs();
       nextTick(() => reportHot());
     }
+  });
+
+  // 「点击菜单栏图标才显示用量」开关。Rust 端切换模式时直接广播：
+  // 窗口藏在后台时不一定收得到跨窗口的 localStorage 变更。
+  unlistenClickUsage = await listen<boolean>('tray_click_usage', (event) => {
+    const enabled = event.payload === true;
+    localStorage.setItem('arkbar_tray_click_usage', enabled ? 'true' : 'false');
+    if (enabled === clickTrayForUsage.value) return;
+    clickTrayForUsage.value = enabled;
+    if (enabled) {
+      isFolded.value = true;
+      activeHoverId.value = null;
+    }
+    nextTick(() => reportHot());
   });
 
   // Rust 摆好窗口后会广播它落在哪条边（页面自己看不出），搬运换边后靠它把布局翻过来。
@@ -1052,6 +1070,13 @@ onMounted(async () => {
       notchEdge.value = (localStorage.getItem('arkbar_notch_edge') as NotchEdge) || 'right';
       activeHoverId.value = null;
       nextTick(() => reportHot());
+    } else if (e.key === 'arkbar_tray_click_usage') {
+      clickTrayForUsage.value = localStorage.getItem('arkbar_tray_click_usage') === 'true';
+      if (clickTrayForUsage.value) {
+        isFolded.value = true;
+        activeHoverId.value = null;
+      }
+      nextTick(() => reportHot());
     }
   });
 
@@ -1075,6 +1100,7 @@ onUnmounted(() => {
   if (unlistenDrag) unlistenDrag();
   if (unlistenRefresh) unlistenRefresh();
   if (unlistenKeepOpen) unlistenKeepOpen();
+  if (unlistenClickUsage) unlistenClickUsage();
   if (activityTimer) clearInterval(activityTimer);
   if (foldTimer) clearTimeout(foldTimer);
   if (hideTimer) clearTimeout(hideTimer);
@@ -1088,7 +1114,7 @@ onUnmounted(() => {
 
 <template>
   <div
-    v-if="notchMode !== 'hidden'"
+    v-if="notchMode !== 'hidden' && !clickTrayForUsage"
     class="fixed inset-0 pointer-events-none select-none flex overflow-visible font-sans"
     :class="notchEdge === 'top' ? 'items-start justify-center pt-0' : 'items-center justify-end pr-0'"
   >

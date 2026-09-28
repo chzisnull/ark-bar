@@ -32,11 +32,17 @@ pub fn run() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
-                    // 菜单栏图标被系统挤掉或被用户隐藏时，快捷键是常驻入口；
-                    // 行为与托盘左键一致：显则隐、隐则显
+                    // 菜单栏图标被系统挤掉或被用户隐藏时，快捷键是常驻入口。
+                    // 点击用量模式下与托盘左键一致：显则隐、隐则显用量卡片；
+                    // 否则整队切换屏幕刘海。
                     if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                        // 整队显隐：一块屏一个刘海，快捷键是它们的总开关
-                        if tray::is_float_window_open(app.clone()) {
+                        if tray::tray_click_usage_enabled() {
+                            if tray::is_usage_window_open(app.clone()) {
+                                let _ = tray::hide_usage_window(app.clone());
+                            } else {
+                                tray::open_usage_window(app);
+                            }
+                        } else if tray::is_float_window_open(app.clone()) {
                             let _ = tray::close_float_window(app.clone());
                         } else if let Some(window) = app.get_webview_window("float") {
                             tray::reveal_float_window(&window);
@@ -50,7 +56,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            // Initialize Menu Bar Tray
+            // 初始化 Menu Bar Tray
             tray::setup_tray(app.handle())?;
 
             // Disable macOS App Nap: with every window hidden the system may
@@ -96,6 +102,22 @@ pub fn run() {
             }
             applog::log("ark-bar 启动");
 
+            // 用量卡片的失焦收起（与原生菜单栏弹窗一致）。
+            // 放在日志初始化之后，「点击没反应」时日志里能看到窗口在不在。
+            tray::attach_usage_window(app.handle());
+
+            // 自检开关（与 ARKBAR_FAKE_EXTRA_SCREEN 同类）：不点鼠标也能走一遍
+            // 「点击菜单栏图标弹出用量」的路径，日志里能看到落点与可见性。
+            if std::env::var("ARKBAR_FORCE_CLICK_USAGE").is_ok() {
+                let _ = tray::set_tray_click_usage(app.handle().clone(), true);
+                tray::open_usage_window(app.handle());
+                applog::log(&format!(
+                    "usage 自检: click_mode={} visible={}",
+                    tray::tray_click_usage_enabled(),
+                    tray::is_usage_window_open(app.handle().clone()),
+                ));
+            }
+
             // 先读回上次的贴边位置、沿边落点与覆盖范围，再摆第一下（否则会先摆右边缘再跳）
             notch::init_state(app.handle());
             // 按覆盖范围把每块屏上的刘海补齐（主显示器 / 所有显示器）
@@ -111,10 +133,8 @@ pub fn run() {
                 }
             }
 
-            // Hide window when clicking outside (loss of focus).
-            // Ignore blur for a short window after tray-clicks so the popover
-            // does not hide itself while macOS is still delivering the click.
-            // Automatically reveal the right-side screen Notch on launch!
+            // 启动先摆出屏幕刘海。若用户开了「点击菜单栏图标才显示用量」，
+            // 前端挂载后会立刻把刘海收回，改由点击弹出。
             if let Some(float_window) = app.get_webview_window("float") {
                 tray::reveal_float_window(&float_window);
             }
@@ -145,6 +165,8 @@ pub fn run() {
             provider_manager::read_provider_token,
             tray::update_tray_title,
             tray::set_tray_icon_visible,
+            tray::set_tray_click_usage,
+            tray::hide_usage_window,
             tray::show_main_window,
             tray::open_onboarding,
             tray::open_update_modal,

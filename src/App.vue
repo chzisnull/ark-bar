@@ -8,8 +8,11 @@ import type { EnvironmentStatus, UpdateInfo, ProviderType, ProviderUsageData, Tr
 const OnboardingWizard = defineAsyncComponent(() => import('./components/OnboardingWizard.vue'));
 const SettingsModal = defineAsyncComponent(() => import('./components/SettingsModal.vue'));
 const FloatingWidget = defineAsyncComponent(() => import('./components/FloatingWidget.vue'));
+const UsagePanel = defineAsyncComponent(() => import('./components/UsagePanel.vue'));
 
 const isFloatWindow = ref(window.location.hash === '#float');
+// 点击菜单栏图标弹出的用量卡片（独立窗口，只有一个实例）
+const isUsageWindow = ref(window.location.hash === '#usage');
 const currentView = ref<'onboarding' | 'settings'>('settings');
 const envStatus = ref<EnvironmentStatus | null>(null);
 const updateInfo = ref<UpdateInfo | null>(null);
@@ -326,6 +329,26 @@ function onPanelBecomeVisible() {
 // 后台线程每轮刷新后逐厂商广播，这里更新本地状态并落盘
 // （localStorage 变更也会通过 storage 事件同步给悬浮窗）。
 let unlistenUsage: (() => void) | null = null;
+let unlistenPopover: (() => void) | null = null;
+
+/// 用量卡片只从 Rust 侧只读缓存取数：不在这里跑 arkcli / curl，
+/// 避免主窗口与后台线程之外再多一路拉取。
+const ALL_PROVIDER_IDS: ProviderType[] = ['volcengine', 'antigravity', 'grok', 'codex', 'teamo'];
+
+async function hydrateUsageFromCache() {
+  try {
+    const cached = await Promise.all(
+      ALL_PROVIDER_IDS.map((id) =>
+        invoke<ProviderUsageData | null>('peek_cached_usage', { provider: id }).catch(() => null)
+      )
+    );
+    cached.forEach((item) => {
+      if (item && item.provider) {
+        providersData.value[item.provider as ProviderType] = item;
+      }
+    });
+  } catch {}
+}
 
 onMounted(() => {
   // The float webview must stay a cheap renderer. All CLI/network work
@@ -335,12 +358,38 @@ onMounted(() => {
     return;
   }
 
+  // 用量卡片同理：只读缓存 + 接收后台广播，不自己发起 CLI/网络拉取。
+  // 每次弹出时再读一次 Rust 侧缓存，保证展示的是刚刷过的读数。
+  if (isUsageWindow.value) {
+    void hydrateUsageFromCache();
+    listen('usage-popover-shown', () => {
+      void hydrateUsageFromCache();
+    }).then((un) => {
+      unlistenUsage = un;
+    });
+    listen<ProviderUsageData>('usage-updated', (event) => {
+      const data = event.payload;
+      if (data && data.provider in providersData.value) {
+        providersData.value[data.provider as ProviderType] = data;
+      }
+    }).then((un) => {
+      unlistenPopover = un;
+    });
+    return;
+  }
+
   updateTrayTitle();
   syncBackgroundPrefs();
   // 按持久化偏好应用菜单栏图标显隐（隐藏场景下托盘仍在后台刷新）；
   // 直接读 localStorage，避免维护第二份状态
+  const trayVisible = trayIconVisiblePref();
   invoke('set_tray_icon_visible', {
-    visible: trayIconVisiblePref(),
+    visible: trayVisible,
+  }).catch(() => {});
+  // 点击菜单栏图标才显示用量：与前一项同一份偏好，交给原生层决定左键行为。
+  // 图标本身是关的就没法点，此时不启用（否则刘海与图标同时消失，无处可点）。
+  invoke('set_tray_click_usage', {
+    enabled: trayVisible && localStorage.getItem('arkbar_tray_click_usage') === 'true',
   }).catch(() => {});
 
   const hasCached = !!providersData.value[activeProvider.value];
@@ -395,6 +444,7 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener('focus', onPanelBecomeVisible);
   if (unlistenUsage) unlistenUsage();
+  if (unlistenPopover) unlistenPopover();
   if (cacheWriteTimer) {
     clearTimeout(cacheWriteTimer);
     flushCachedProviders();
@@ -403,13 +453,43 @@ onUnmounted(() => {
 function handleCloseSettings() {
   invoke('hide_window').catch(() => {});
 }
+// 用量卡片上的「偏好设置」：收起弹窗并唤出设置窗口
+function openSettingsFromPopover() {
+  invoke('hide_usage_window').catch(() => {});
+  invoke('show_main_window').catch(() => {});
+}
+// 用量卡片上的「前往授权」：走已有的安装/授权引导，而不是干停在设置首页
+function openAuthFromPopover() {
+  invoke('hide_usage_window').catch(() => {});
+  invoke('open_onboarding').catch(() => {});
+}
 </script>
 
 <template>
   <!-- 1. Floating Desktop Widget Mode (Screen Edge Notch) -->
   <FloatingWidget v-if="isFloatWindow" />
 
-  <!-- 2. Settings Window Mode (Codenotch 2-Column Settings) -->
+  <!-- 2. Usage Popover Mode（点击菜单栏图标弹出） -->
+  <main
+    v-else-if="isUsageWindow"
+    class="w-full h-full rounded-2xl overflow-hidden border border-white/10 shadow-2xl bg-[#0e131f] flex flex-col"
+  >
+    <UsagePanel
+      :providers-data="providersData"
+      :active-provider="activeProvider"
+      :provider-tabs="providerTabs"
+      :is-refreshing="isRefreshing"
+      :loading-map="loadingMap"
+      :update-info="updateInfo"
+      @switch-provider="handleSwitchProvider"
+      @update-provider-tabs="saveProviderTabs"
+      @refresh="handleRefreshCurrent"
+      @open-settings="openSettingsFromPopover"
+      @go-auth="openAuthFromPopover"
+    />
+  </main>
+
+  <!-- 3. Settings Window Mode (Codenotch 2-Column Settings) -->
   <main v-else class="w-full h-full rounded-2xl bg-[#18191c] shadow-2xl overflow-hidden flex flex-col font-sans">
     <!-- Onboarding Wizard -->
     <OnboardingWizard
