@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 use serde_json::Value;
-use crate::env_resolver::execute_cmd_timeout;
+use crate::env_resolver::execute_cmd_timeout_no_browser;
 use crate::provider_models::{
     ProviderAccountInfo, ProviderPlanGroup, ProviderQuotaPeriod, ProviderUsageData,
 };
@@ -93,8 +93,13 @@ pub fn peek_antigravity_usage() -> Option<ProviderUsageData> {
 fn fetch_antigravity_usage_uncached() -> ProviderUsageData {
     let cmd = resolve_agy_command();
     let email = get_active_google_email();
+    // 记下起点：这次调用期间如果浏览器拦截器记了新账，说明 agy 判定「未登录」了。
+    let started = std::time::SystemTime::now();
 
-    let output = match execute_cmd_timeout(
+    // 用 no_browser 版本：agy 的 token 刷新一旦遇到瞬时网络错误，就会判定「未登录」
+    // 并降级成交互式 OAuth 打开 accounts.google.com 授权页（它没有 --no-browser 开关，
+    // opener 走 PATH 查找）。后台轮询每几分钟跑一次，绝不能把登录页弹到用户脸上。
+    let output = match execute_cmd_timeout_no_browser(
         &cmd,
         &["-p", "/usage", "--output-format", "json"],
         Duration::from_secs(45),
@@ -104,13 +109,24 @@ fn fetch_antigravity_usage_uncached() -> ProviderUsageData {
             if let Some(cached) = AGY_CACHE.peek().filter(|d| d.is_connected) {
                 return cached;
             }
+            let relogin = crate::env_resolver::browser_guard_blocked_since(started);
             return ProviderUsageData {
                 provider: "antigravity".to_string(),
                 provider_name: "Google Antigravity".to_string(),
                 icon: "🌐".to_string(),
                 is_connected: false,
-                status_message: Some("未检测到 agy 命令行工具".to_string()),
-                error_message: Some(format!("执行 agy 失败: {}", e)),
+                status_message: Some(if relogin {
+                    "agy 登录已失效，需在终端重新登录".to_string()
+                } else {
+                    "未检测到 agy 命令行工具".to_string()
+                }),
+                error_message: Some(if relogin {
+                    format!(
+                        "{e}；agy 判定未登录并尝试打开授权页（已被拦下），请在终端运行 agy 完成一次交互式登录"
+                    )
+                } else {
+                    format!("执行 agy 失败: {}", e)
+                }),
                 account_info: email.map(|em| ProviderAccountInfo {
                     user_name: None,
                     email: Some(em),
@@ -132,13 +148,29 @@ fn fetch_antigravity_usage_uncached() -> ProviderUsageData {
             return cached;
         }
         let stderr = String::from_utf8_lossy(&output.stderr);
+        // 除了「拦下了浏览器」这一条，agy 在无控制终端时还会直接放弃交互式登录，
+        // 那种情况 stderr 里会写明原因，同样是「需要重新登录」而不是「工具没装」。
+        let relogin = crate::env_resolver::browser_guard_blocked_since(started)
+            || stderr.contains("Authentication required")
+            || stderr.contains("no controlling terminal");
         return ProviderUsageData {
             provider: "antigravity".to_string(),
             provider_name: "Google Antigravity".to_string(),
             icon: "🌐".to_string(),
             is_connected: false,
-            status_message: Some("agy 查询用量失败".to_string()),
-            error_message: Some(format!("agy 退出码异常: {}", stderr.trim())),
+            status_message: Some(if relogin {
+                "agy 登录已失效，需在终端重新登录".to_string()
+            } else {
+                "agy 查询用量失败".to_string()
+            }),
+            error_message: Some(if relogin {
+                format!(
+                    "agy 登录已失效并尝试拉起授权页（已拦下自动打开），请在终端运行 agy 完成一次交互式登录: {}",
+                    stderr.trim()
+                )
+            } else {
+                format!("agy 退出码异常: {}", stderr.trim())
+            }),
             account_info: email.map(|em| ProviderAccountInfo {
                 user_name: None,
                 email: Some(em),
